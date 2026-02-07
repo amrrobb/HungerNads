@@ -1,0 +1,45 @@
+name = "hungernads"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# ─── D1 Database ────────────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "hungernads-db"
+database_id = "placeholder-replace-after-d1-create"
+migrations_dir = "src/db/migrations"
+
+# ─── Durable Objects ────────────────────────────────────────────
+[durable_objects]
+bindings = [
+  { name = "AGENT_DO", class_name = "AgentDO" },
+  { name = "ARENA_DO", class_name = "ArenaDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["AgentDO", "ArenaDO"]
+
+# ─── KV Namespaces ──────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "CACHE"
+id = "placeholder-replace-after-kv-create"
+
+# ─── Environment Variables (non-secret) ─────────────────────────
+[vars]
+ENVIRONMENT = "development"
+PYTH_ENDPOINT = "https://hermes.pyth.network"
+
+# ─── Secrets (set via `wrangler secret put`) ──────────────────────
+# MONAD_RPC_URL              = Monad testnet RPC endpoint
+# PRIVATE_KEY                = Worker oracle wallet private key (0x-prefixed)
+# ARENA_CONTRACT_ADDRESS     = Deployed HungernadsArena address
+# BETTING_CONTRACT_ADDRESS   = Deployed HungernadsBetting address
+# GROQ_API_KEY               = Groq LLM API key
+# GOOGLE_API_KEY             = Google AI API key
+# OPENROUTER_API_KEY         = OpenRouter API key
+
+# ─── Dev settings ───────────────────────────────────────────────
+[dev]
+port = 8787

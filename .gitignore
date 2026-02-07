@@ -1,9 +1,28 @@
+# Dependencies
 node_modules/
+
+# Build
 dist/
+
+# Environment / Secrets
 .env
 .env.*
 !.env.example
-.DS_Store
-*.log
-.wrangler/
 .dev.vars
+
+# Cloudflare
+.wrangler/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Beads (local task tracking)
+.beads/

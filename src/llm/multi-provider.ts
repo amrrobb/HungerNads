@@ -27,19 +27,53 @@ interface LLMResponse {
   model: string;
 }
 
+/**
+ * Explicit API keys for environments without process.env (e.g. Cloudflare Workers).
+ * When provided, these take precedence over process.env lookups.
+ */
+export interface LLMKeys {
+  groqApiKey?: string;
+  groq2ApiKey?: string;
+  googleApiKey?: string;
+  openrouterApiKey?: string;
+}
+
 export class MultiProviderLLM {
   private providers: Provider[] = [];
   private currentIndex = 0;
 
-  constructor() {
+  constructor(keys?: LLMKeys) {
+    // Resolve keys: explicit keys take precedence, fall back to process.env
+    const env = typeof process !== 'undefined' ? process.env : {};
+    const groqKey = keys?.groqApiKey ?? env.GROQ_API_KEY;
+    const groq2Key = keys?.groq2ApiKey ?? env.GROQ_2_API_KEY;
+    const googleKey = keys?.googleApiKey ?? env.GOOGLE_API_KEY;
+    const openrouterKey = keys?.openrouterApiKey ?? env.OPENROUTER_API_KEY;
+
     // Initialize providers in priority order (best free tiers first)
-    
+
     // 1. Groq - Best free tier (1,000 req/day)
-    if (process.env.GROQ_API_KEY) {
+    if (groqKey) {
       this.providers.push({
         name: 'groq',
         client: new OpenAI({
-          apiKey: process.env.GROQ_API_KEY,
+          apiKey: groqKey,
+          baseURL: 'https://api.groq.com/openai/v1',
+        }),
+        model: 'llama-3.3-70b-versatile',
+        priority: 1,
+        requestsToday: 0,
+        lastReset: new Date(),
+        dailyLimit: 1000,
+      });
+    }
+
+    // 1b. Groq secondary key - Another 1,000 req/day
+    if (groq2Key) {
+      this.providers.push({
+        name: 'groq-2',
+        client: new OpenAI({
+          apiKey: groq2Key,
           baseURL: 'https://api.groq.com/openai/v1',
         }),
         model: 'llama-3.3-70b-versatile',
@@ -51,11 +85,11 @@ export class MultiProviderLLM {
     }
 
     // 2. Google Gemini - Good free tier (~1,500 req/day)
-    if (process.env.GOOGLE_API_KEY) {
+    if (googleKey) {
       this.providers.push({
         name: 'google',
         client: new OpenAI({
-          apiKey: process.env.GOOGLE_API_KEY,
+          apiKey: googleKey,
           baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
         }),
         model: 'gemini-2.0-flash',
@@ -67,11 +101,11 @@ export class MultiProviderLLM {
     }
 
     // 3. OpenRouter - Smaller free tier (50 req/day) but good fallback
-    if (process.env.OPENROUTER_API_KEY) {
+    if (openrouterKey) {
       this.providers.push({
         name: 'openrouter',
         client: new OpenAI({
-          apiKey: process.env.OPENROUTER_API_KEY,
+          apiKey: openrouterKey,
           baseURL: 'https://openrouter.ai/api/v1',
         }),
         model: 'meta-llama/llama-3.3-70b-instruct:free',
@@ -88,7 +122,7 @@ export class MultiProviderLLM {
       );
     }
 
-    console.log(`[LLM] Initialized ${this.providers.length} providers:`, 
+    console.log(`[LLM] Initialized ${this.providers.length} providers:`,
       this.providers.map(p => `${p.name} (${p.dailyLimit}/day)`).join(', ')
     );
   }
@@ -208,12 +242,22 @@ export class MultiProviderLLM {
   }
 }
 
-// Singleton instance
+// Singleton instance (keyed by serialised keys for multi-tenant safety)
 let llmInstance: MultiProviderLLM | null = null;
+let llmInstanceKeyHash: string = '';
 
-export function getLLM(): MultiProviderLLM {
-  if (!llmInstance) {
-    llmInstance = new MultiProviderLLM();
+function keyHash(keys?: LLMKeys): string {
+  if (!keys) return '__env__';
+  return [keys.groqApiKey, keys.groq2ApiKey, keys.googleApiKey, keys.openrouterApiKey]
+    .map(k => k ? k.slice(0, 8) : '')
+    .join('|');
+}
+
+export function getLLM(keys?: LLMKeys): MultiProviderLLM {
+  const hash = keyHash(keys);
+  if (!llmInstance || llmInstanceKeyHash !== hash) {
+    llmInstance = new MultiProviderLLM(keys);
+    llmInstanceKeyHash = hash;
   }
   return llmInstance;
 }
@@ -226,14 +270,15 @@ export async function agentDecision(
   hp: number,
   marketData: { eth: number; btc: number; sol: number; mon: number },
   otherAgents: { name: string; class: string; hp: number }[],
-  lessons: string[]
+  lessons: string[],
+  keys?: LLMKeys,
 ): Promise<{
   prediction: { asset: string; direction: 'UP' | 'DOWN'; stake: number };
   attack: { target: string; stake: number } | null;
   defend: boolean;
   reasoning: string;
 }> {
-  const llm = getLLM();
+  const llm = getLLM(keys);
 
   const systemPrompt = `You are ${agentName}, a ${agentClass} agent in HUNGERNADS arena.
 ${personality}

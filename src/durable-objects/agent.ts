@@ -11,6 +11,9 @@
 
 import type { Env } from '../index';
 import type { AgentClass, AgentState, EpochActions, MarketData, ArenaContext } from '../agents';
+import { agentDecision, type LLMKeys } from '../llm';
+import { PERSONALITIES } from '../agents/personalities';
+import { EpochActionsSchema } from '../agents/schemas';
 
 // ─── Types ────────────────────────────────────────────────────────
 
@@ -106,16 +109,71 @@ export class AgentDO implements DurableObject {
 
   /**
    * Make a decision for the current epoch.
-   * Placeholder: will delegate to LLM with agent personality + memory.
+   * Calls the multi-provider LLM with the agent's personality and memory.
+   * Falls back to class-specific defaults if LLM is unavailable.
    */
   async decide(marketData: MarketData, arenaState: ArenaContext): Promise<EpochActions> {
     const agentClass = (await this.state.storage.get<AgentClass>('class')) ?? 'WARRIOR';
     const hp = (await this.state.storage.get<number>('hp')) ?? 1000;
-    const _lessons = (await this.state.storage.get<Lesson[]>('lessons')) ?? [];
+    const name = (await this.state.storage.get<string>('name')) ?? 'Unknown';
+    const lessons = (await this.state.storage.get<Lesson[]>('lessons')) ?? [];
 
-    // TODO: Integrate with LLM provider using agent personality
-    // For now, return safe default actions based on class
-    return this.getDefaultActions(agentClass, hp, arenaState);
+    // Extract LLM keys from Cloudflare env bindings
+    const llmKeys: LLMKeys = {
+      groqApiKey: this.env.GROQ_API_KEY,
+      googleApiKey: this.env.GOOGLE_API_KEY,
+      openrouterApiKey: this.env.OPENROUTER_API_KEY,
+    };
+
+    // Check if any LLM keys are available
+    const hasKeys = !!(llmKeys.groqApiKey || llmKeys.googleApiKey || llmKeys.openrouterApiKey);
+
+    if (!hasKeys) {
+      // No LLM keys configured - use class-specific defaults
+      return this.getDefaultActions(agentClass, hp, arenaState);
+    }
+
+    try {
+      const personality = PERSONALITIES[agentClass]?.systemPrompt ?? '';
+      const otherAgents = arenaState.agents
+        .filter((a: AgentState) => a.id !== (arenaState.agents.find((ag: AgentState) => ag.class === agentClass)?.id))
+        .filter((a: AgentState) => a.isAlive)
+        .map((a: AgentState) => ({ name: a.name, class: a.class, hp: a.hp }));
+
+      const result = await agentDecision(
+        name,
+        agentClass,
+        personality,
+        hp,
+        {
+          eth: marketData.prices.ETH ?? 0,
+          btc: marketData.prices.BTC ?? 0,
+          sol: marketData.prices.SOL ?? 0,
+          mon: marketData.prices.MON ?? 0,
+        },
+        otherAgents,
+        lessons.slice(-3).map(l => l.learning),
+        llmKeys,
+      );
+
+      // Validate with Zod schema
+      const parsed = EpochActionsSchema.safeParse({
+        prediction: result.prediction,
+        attack: result.attack ?? undefined,
+        defend: result.defend,
+        reasoning: result.reasoning,
+      });
+
+      if (!parsed.success) {
+        console.warn(`[AgentDO:${name}] Invalid LLM response, using defaults`);
+        return this.getDefaultActions(agentClass, hp, arenaState);
+      }
+
+      return parsed.data;
+    } catch (error) {
+      console.error(`[AgentDO:${name}] LLM decision failed:`, error);
+      return this.getDefaultActions(agentClass, hp, arenaState);
+    }
   }
 
   /**

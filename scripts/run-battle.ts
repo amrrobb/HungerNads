@@ -16,6 +16,8 @@
  * "May the nads be ever in your favor."
  */
 
+import 'dotenv/config';
+
 import { ArenaManager } from '../src/arena/arena';
 import { processEpoch, type EpochResult } from '../src/arena/epoch';
 import { PriceFeed } from '../src/arena/price-feed';

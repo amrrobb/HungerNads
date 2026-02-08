@@ -57,6 +57,7 @@ export class TraderAgent extends BaseAgent {
         },
         others,
         this.lessons.slice(-3).map(l => l.learning),
+        this.llmKeys,
       );
 
       // -------------------------------------------------------------------

@@ -14,6 +14,7 @@ import type {
   ArenaAgentState,
   MatchupRecord,
 } from './schemas';
+import type { LLMKeys } from '../llm';
 
 // ---------------------------------------------------------------------------
 // BaseAgent
@@ -29,6 +30,8 @@ export abstract class BaseAgent {
   public kills: number;
   public epochsSurvived: number;
   public lessons: Lesson[];
+  /** Optional LLM API keys for Workers env (no process.env). */
+  public llmKeys?: LLMKeys;
 
   constructor(id: string, name: string, agentClass: AgentClass) {
     this.id = id;

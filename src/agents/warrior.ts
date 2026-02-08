@@ -94,6 +94,7 @@ export class WarriorAgent extends BaseAgent {
         },
         others,
         this.lessons.slice(-3).map(l => l.learning),
+        this.llmKeys,
       );
 
       // ----- Parse + enforce Warrior constraints -----

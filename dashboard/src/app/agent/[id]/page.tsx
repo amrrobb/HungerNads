@@ -1,151 +1,161 @@
+import { notFound } from "next/navigation";
 import { StatsHeader } from "@/components/agent/StatsHeader";
 import { MatchupChart } from "@/components/agent/MatchupChart";
 import { LessonsSection } from "@/components/agent/LessonCard";
 import { DeathCausesChart } from "@/components/agent/DeathCausesChart";
 import { BattleHistoryTable } from "@/components/agent/BattleHistoryTable";
-import type { AgentProfileFull } from "@/types";
+import type { AgentClass, AgentProfileFull, DeathCause, Lesson } from "@/types";
+import {
+  getAgentProfile,
+  getAgentLessons,
+  getAgentMatchups,
+  ApiError,
+  type ApiLesson,
+} from "@/lib/api";
 
-// ── Mock Data: Sample Warrior Agent ──────────────────────────────────────────
+// ── Data Mapping ────────────────────────────────────────────────────────────
 
-const MOCK_WARRIOR: AgentProfileFull = {
-  id: "warrior-001",
-  name: "BLOODFANG",
-  class: "WARRIOR",
-  totalBattles: 24,
-  wins: 14,
-  losses: 10,
-  totalKills: 47,
-  avgSurvivalEpochs: 8.3,
-  currentStreak: 3,
-  matchups: {
-    WARRIOR: { wins: 3, losses: 2 },
-    TRADER: { wins: 5, losses: 1 },
-    SURVIVOR: { wins: 2, losses: 4 },
-    PARASITE: { wins: 3, losses: 1 },
-    GAMBLER: { wins: 4, losses: 2 },
-  },
-  deathCauses: {
-    prediction: 2,
-    combat: 4,
-    bleed: 1,
-    multi: 3,
-  },
-  lessons: [
-    {
-      battleId: "b-042",
-      context:
-        "Attacked SURVIVOR at 25% HP. Expected easy kill on a weakened target.",
-      outcome:
-        "SURVIVOR defended. Lost 200 HP from reflected damage. Ended up exposed to TRADER counterattack.",
-      learning:
-        "SURVIVORS always defend when desperate. Never attack a low-HP SURVIVOR -- they will turtle and outlast you.",
-      applied:
-        "Stopped targeting SURVIVORs below 30% HP. Redirected aggression to TRADERs who don't defend.",
-    },
-    {
-      battleId: "b-039",
-      context:
-        "Went all-in on ETH UP prediction with 50% HP stake during high volatility.",
-      outcome:
-        "ETH dumped 3.2%. Lost 500 HP in a single epoch. Dropped from 1st to last place.",
-      learning:
-        "High-volatility epochs are traps for aggressive stakes. Cap prediction stakes at 20% during volatility spikes.",
-      applied:
-        "Implemented volatility detection. Reduced max stake from 50% to 20% during high-vol epochs.",
-    },
-    {
-      battleId: "b-035",
-      context:
-        "Ignored PARASITE copying my predictions for 3 epochs. Focused only on attacking TRADER.",
-      outcome:
-        "PARASITE gained 600 HP from my correct predictions while I was spending HP on combat. PARASITE won the battle.",
-      learning:
-        "PARASITEs are dangerous when left unchecked. They accumulate HP without risk. Attack them early before they snowball.",
-      applied:
-        "Added PARASITE threat detection. Now attacks PARASITEs after 2 consecutive copy-epochs.",
-    },
-    {
-      battleId: "b-031",
-      context:
-        "GAMBLER randomly attacked me on epoch 2 for 300 HP. Was not expecting early combat.",
-      outcome:
-        "Lost 300 HP before I could establish position. Spent rest of battle recovering instead of dominating.",
-      learning:
-        "GAMBLERs are unpredictable wildcards. Always defend on epoch 1-2 when a GAMBLER is in the arena.",
-      applied:
-        "Now auto-defends in first 2 epochs when facing a GAMBLER opponent.",
-    },
-    {
-      battleId: "b-028",
-      context:
-        "Had 800 HP lead with 3 agents remaining. Switched to conservative predictions to protect lead.",
-      outcome:
-        "Bleed damage (2% per epoch) slowly chipped away at HP. TRADER caught up through consistent correct predictions.",
-      learning:
-        "Playing conservative with a lead is a losing strategy due to bleed. Must maintain aggressive predictions to offset bleed.",
-      applied:
-        "Minimum prediction stake now set to 15% regardless of HP lead. Never go passive.",
-    },
-  ],
-  battleHistory: [
-    {
-      battleId: "b-048",
-      date: "2026-02-07",
-      result: "WON",
-      epochsSurvived: 12,
-      hpRemaining: 340,
-      kills: 3,
-    },
-    {
-      battleId: "b-045",
-      date: "2026-02-06",
-      result: "WON",
-      epochsSurvived: 10,
-      hpRemaining: 180,
-      kills: 2,
-    },
-    {
-      battleId: "b-042",
-      date: "2026-02-05",
-      result: "WON",
-      epochsSurvived: 14,
-      hpRemaining: 90,
-      kills: 1,
-    },
-    {
-      battleId: "b-039",
-      date: "2026-02-04",
-      result: "REKT",
-      epochsSurvived: 4,
-      hpRemaining: 0,
-      kills: 0,
-    },
-    {
-      battleId: "b-035",
-      date: "2026-02-03",
-      result: "LOST",
-      epochsSurvived: 9,
-      hpRemaining: 0,
-      kills: 2,
-    },
-    {
-      battleId: "b-031",
-      date: "2026-02-02",
-      result: "LOST",
-      epochsSurvived: 6,
-      hpRemaining: 0,
-      kills: 1,
-    },
-    {
-      battleId: "b-028",
-      date: "2026-02-01",
-      result: "LOST",
-      epochsSurvived: 11,
-      hpRemaining: 0,
-      kills: 2,
-    },
-  ],
-};
+const VALID_CLASSES: AgentClass[] = [
+  "WARRIOR",
+  "TRADER",
+  "SURVIVOR",
+  "PARASITE",
+  "GAMBLER",
+];
+
+/**
+ * Map backend death causes (keyed by killer class name or "BLEED") to the
+ * frontend DeathCause enum. Backend tracks WHO killed (class names), while
+ * frontend tracks HOW (prediction/combat/bleed/multi).
+ *
+ * Mapping:
+ *   - "BLEED" -> "bleed"
+ *   - Any agent class name -> "combat"
+ *   - Unknown -> "multi"
+ *
+ * "prediction" deaths aren't tracked separately by the backend yet, so
+ * prediction defaults to 0 unless explicitly present.
+ */
+function mapDeathCauses(
+  raw: Record<string, number>,
+): Record<DeathCause, number> {
+  const mapped: Record<DeathCause, number> = {
+    prediction: 0,
+    combat: 0,
+    bleed: 0,
+    multi: 0,
+  };
+
+  for (const [key, count] of Object.entries(raw)) {
+    const upper = key.toUpperCase();
+    if (upper === "BLEED") {
+      mapped.bleed += count;
+    } else if (upper === "PREDICTION") {
+      mapped.prediction += count;
+    } else if (upper === "MULTI") {
+      mapped.multi += count;
+    } else if (VALID_CLASSES.includes(upper as AgentClass)) {
+      // Killed by another agent class = combat death
+      mapped.combat += count;
+    } else {
+      mapped.multi += count;
+    }
+  }
+
+  return mapped;
+}
+
+/** Map backend lessons to frontend Lesson type (drops epoch field). */
+function mapLesson(api: ApiLesson): Lesson {
+  return {
+    battleId: api.battleId,
+    context: api.context,
+    outcome: api.outcome,
+    learning: api.learning,
+    applied: api.applied,
+  };
+}
+
+/**
+ * Map backend matchups to a complete Record<AgentClass, {wins, losses}>.
+ * Backend may only include classes the agent has actually faced, so
+ * we fill in zeros for missing classes.
+ */
+function mapMatchups(
+  raw: Record<string, { wins: number; losses: number }>,
+): Record<AgentClass, { wins: number; losses: number }> {
+  const result = {} as Record<AgentClass, { wins: number; losses: number }>;
+  for (const cls of VALID_CLASSES) {
+    result[cls] = raw[cls] ?? { wins: 0, losses: 0 };
+  }
+  return result;
+}
+
+/**
+ * Derive a display name from the agent class and ID.
+ * Backend profile doesn't include name, so we generate one.
+ * Format: CLASS-<first6chars> e.g. "WARRIOR-a1b2c3"
+ */
+function deriveAgentName(agentId: string, agentClass: string): string {
+  const shortId = agentId.slice(0, 6).toUpperCase();
+  return `${agentClass}-${shortId}`;
+}
+
+// ── Data Fetching ───────────────────────────────────────────────────────────
+
+async function fetchAgentData(agentId: string): Promise<AgentProfileFull | null> {
+  try {
+    // Fetch all three endpoints in parallel
+    const [profile, lessonsRes, matchupsRes] = await Promise.all([
+      getAgentProfile(agentId),
+      getAgentLessons(agentId, 20),
+      getAgentMatchups(agentId),
+    ]);
+
+    // Use the dedicated matchups endpoint for the latest data,
+    // falling back to the profile's matchups if the endpoint returns empty
+    const rawMatchups =
+      Object.keys(matchupsRes.matchups).length > 0
+        ? matchupsRes.matchups
+        : profile.matchups;
+
+    // Use the dedicated lessons endpoint (which supports higher limits)
+    // falling back to profile's recentLessons
+    const rawLessons =
+      lessonsRes.lessons.length > 0
+        ? lessonsRes.lessons
+        : profile.recentLessons;
+
+    const agentClass = (
+      VALID_CLASSES.includes(profile.agentClass as AgentClass)
+        ? profile.agentClass
+        : "WARRIOR"
+    ) as AgentClass;
+
+    const losses = profile.totalBattles - profile.wins;
+
+    return {
+      id: profile.agentId,
+      name: deriveAgentName(profile.agentId, profile.agentClass),
+      class: agentClass,
+      totalBattles: profile.totalBattles,
+      wins: profile.wins,
+      losses: losses >= 0 ? losses : 0,
+      totalKills: profile.kills,
+      avgSurvivalEpochs: profile.avgSurvival,
+      currentStreak: profile.streak,
+      matchups: mapMatchups(rawMatchups),
+      deathCauses: mapDeathCauses(profile.deathCauses),
+      lessons: rawLessons.map(mapLesson),
+      battleHistory: [], // Backend doesn't expose battle history endpoint yet
+    };
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+}
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
@@ -156,8 +166,13 @@ interface AgentPageProps {
 export default async function AgentPage({ params }: AgentPageProps) {
   const { id } = await params;
 
-  // In production, fetch from API. For now, use mock data.
-  const agent = { ...MOCK_WARRIOR, id };
+  const agent = await fetchAgentData(id);
+
+  if (!agent) {
+    notFound();
+  }
+
+  const hasDeaths = Object.values(agent.deathCauses).some((v) => v > 0);
 
   return (
     <div className="space-y-6">
@@ -179,11 +194,13 @@ export default async function AgentPage({ params }: AgentPageProps) {
       {/* Matchups and Death Causes side by side */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <MatchupChart matchups={agent.matchups} ownClass={agent.class} />
-        <DeathCausesChart deathCauses={agent.deathCauses} />
+        {hasDeaths && <DeathCausesChart deathCauses={agent.deathCauses} />}
       </div>
 
-      {/* Battle History */}
-      <BattleHistoryTable battles={agent.battleHistory} />
+      {/* Battle History (shown only if data exists) */}
+      {agent.battleHistory.length > 0 && (
+        <BattleHistoryTable battles={agent.battleHistory} />
+      )}
     </div>
   );
 }

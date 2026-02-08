@@ -113,6 +113,43 @@ export interface OddsUpdateEvent {
   };
 }
 
+// ─── Token / Curve Events (nad.fun streaming) ────────────────────────
+
+export interface TokenBuyEvent {
+  type: 'token_buy';
+  data: {
+    sender: string;
+    token: string;
+    amountIn: string;
+    amountOut: string;
+    txHash: string;
+    blockNumber: string;
+  };
+}
+
+export interface TokenSellEvent {
+  type: 'token_sell';
+  data: {
+    sender: string;
+    token: string;
+    amountIn: string;
+    amountOut: string;
+    txHash: string;
+    blockNumber: string;
+  };
+}
+
+export interface CurveUpdateEvent {
+  type: 'curve_update';
+  data: {
+    eventKind: 'Create' | 'Sync' | 'Graduate' | 'TokenLocked';
+    token: string;
+    txHash: string;
+    blockNumber: string;
+    details: Record<string, string>;
+  };
+}
+
 export type BattleEvent =
   | EpochStartEvent
   | AgentActionEvent
@@ -121,7 +158,10 @@ export type BattleEvent =
   | AgentDeathEvent
   | EpochEndEvent
   | BattleEndEvent
-  | OddsUpdateEvent;
+  | OddsUpdateEvent
+  | TokenBuyEvent
+  | TokenSellEvent
+  | CurveUpdateEvent;
 
 export type BattleEventHandler = (event: BattleEvent) => void;
 export type ConnectionHandler = (connected: boolean) => void;

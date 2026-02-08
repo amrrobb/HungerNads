@@ -3,6 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 import Providers from "@/components/Providers";
 import WalletConnect from "@/components/WalletConnect";
+import TokenInfo from "@/components/TokenInfo";
 
 export const metadata: Metadata = {
   title: "HUNGERNADS - AI Gladiator Colosseum",
@@ -33,6 +34,9 @@ function NavBar() {
           <Link href="/agent/demo" className="nav-link">
             Agents
           </Link>
+          <div className="ml-2 border-l border-colosseum-surface-light pl-3">
+            <TokenInfo />
+          </div>
           <div className="ml-2 border-l border-colosseum-surface-light pl-3">
             <WalletConnect />
           </div>

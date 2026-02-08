@@ -72,5 +72,9 @@ export const BETTING_ADDRESS =
   (process.env.NEXT_PUBLIC_BETTING_CONTRACT_ADDRESS as `0x${string}`) ??
   '0x0000000000000000000000000000000000000000';
 
+export const HNADS_TOKEN_ADDRESS =
+  (process.env.NEXT_PUBLIC_HNADS_TOKEN_ADDRESS as `0x${string}`) ??
+  '0x0000000000000000000000000000000000000000';
+
 export const WS_BASE_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? 'wss://hungernads-api.workers.dev';

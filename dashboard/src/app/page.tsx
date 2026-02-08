@@ -310,6 +310,27 @@ export default function HomePage() {
     }),
   );
 
+  // ── Start a new battle ──────────────────────────────────────────
+  const [startingBattle, setStartingBattle] = useState(false);
+
+  const handleStartBattle = useCallback(async () => {
+    try {
+      setStartingBattle(true);
+      const res = await fetch(`${API_BASE}/battle/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}), // defaults to all 5 agent classes
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { battleId: string };
+      // Navigate to the new battle
+      window.location.href = `/battle/${data.battleId}`;
+    } catch (err) {
+      console.error('Failed to start battle:', err);
+      setStartingBattle(false);
+    }
+  }, []);
+
   // ── Kick off fetches on mount ─────────────────────────────────
   useEffect(() => {
     fetchLiveBattles();
@@ -324,6 +345,19 @@ export default function HomePage() {
   return (
     <div>
       <HeroSection activeBattleCount={liveBattles.length} />
+
+      {/* Start Battle CTA */}
+      {liveBattles.length === 0 && !liveBattlesLoading && (
+        <div className="mt-6 flex justify-center">
+          <button
+            onClick={handleStartBattle}
+            disabled={startingBattle}
+            className="rounded-lg border border-gold/40 bg-gold/10 px-8 py-3 text-sm font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60"
+          >
+            {startingBattle ? 'Summoning Gladiators...' : 'Start New Battle'}
+          </button>
+        </div>
+      )}
 
       <div className="mt-8 grid grid-cols-1 gap-8 lg:grid-cols-5">
         {/* Left column: live battles + recent results */}

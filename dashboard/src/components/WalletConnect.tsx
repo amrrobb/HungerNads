@@ -10,17 +10,43 @@
 
 'use client';
 
-import { useAccount, useConnect, useDisconnect } from 'wagmi';
+import { useState, useEffect } from 'react';
+import { useAccount, useConnect, useDisconnect, useSwitchChain } from 'wagmi';
 import { injected } from 'wagmi/connectors';
+import { monadTestnet } from '@/lib/wallet';
 
 function truncateAddress(address: string): string {
   return `${address.slice(0, 6)}...${address.slice(-4)}`;
 }
 
 export default function WalletConnect() {
+  const [mounted, setMounted] = useState(false);
   const { address, isConnected, chain } = useAccount();
   const { connect, isPending: isConnecting } = useConnect();
   const { disconnect } = useDisconnect();
+  const { switchChain } = useSwitchChain();
+
+  useEffect(() => setMounted(true), []);
+
+  // Auto-switch to Monad testnet if connected to wrong chain
+  useEffect(() => {
+    if (mounted && isConnected && chain && chain.id !== monadTestnet.id) {
+      switchChain({ chainId: monadTestnet.id });
+    }
+  }, [mounted, isConnected, chain, switchChain]);
+
+  // Render the disconnected state on server to avoid hydration mismatch.
+  // wagmi may restore a connected wallet on the client before the first paint.
+  if (!mounted) {
+    return (
+      <button
+        disabled
+        className="rounded border border-gold/30 bg-gold/10 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60"
+      >
+        Connect Wallet
+      </button>
+    );
+  }
 
   if (isConnected && address) {
     return (

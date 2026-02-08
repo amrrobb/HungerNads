@@ -108,8 +108,8 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
   }, []);
 
   useEffect(() => {
-    // Don't connect for empty/placeholder battle IDs
-    if (!battleId || battleId === 'demo') return;
+    // Don't connect for empty battle IDs
+    if (!battleId) return;
 
     const ws = new BattleWebSocket(battleId);
     wsRef.current = ws;

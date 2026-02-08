@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 800 400" width="800" height="400">
+  <defs>
+    <linearGradient id="gold" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F4D03F"/>
+      <stop offset="40%" stop-color="#DAA520"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <linearGradient id="goldStroke" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF5CC"/>
+      <stop offset="100%" stop-color="#C5941A"/>
+    </linearGradient>
+    <linearGradient id="darkBg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#1a1a2e"/>
+      <stop offset="100%" stop-color="#0d0d1a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Dark background -->
+  <rect width="800" height="400" fill="url(#darkBg)" rx="8"/>
+
+  <!-- Embed the PNG icon -->
+  <image
+    x="300" y="20"
+    width="200" height="200"
+    href="hungernad-512px.png"
+    preserveAspectRatio="xMidYMid meet"
+  />
+
+  <!-- HUNGERNADS text -->
+  <text
+    x="400" y="290"
+    text-anchor="middle"
+    font-family="'Cinzel', 'Trajan Pro', 'Times New Roman', serif"
+    font-size="72"
+    font-weight="700"
+    letter-spacing="14"
+    fill="url(#gold)"
+    stroke="url(#goldStroke)"
+    stroke-width="0.5"
+  >HUNGERNADS</text>
+
+  <!-- Decorative lines -->
+  <line x1="100" y1="310" x2="355" y2="310" stroke="#DAA520" stroke-width="1" opacity="0.6"/>
+  <line x1="445" y1="310" x2="700" y2="310" stroke="#DAA520" stroke-width="1" opacity="0.6"/>
+  <polygon points="400,303 408,310 400,317 392,310" fill="#DAA520" opacity="0.7"/>
+
+  <!-- Tagline -->
+  <text
+    x="400" y="345"
+    text-anchor="middle"
+    font-family="'Cinzel', 'Trajan Pro', 'Times New Roman', serif"
+    font-size="14"
+    font-weight="400"
+    letter-spacing="7"
+    fill="#DAA520"
+    opacity="0.7"
+  >MAY THE NADS BE EVER IN YOUR FAVOR</text>
+
+  <!-- AI COLOSSEUM ON MONAD subtitle -->
+  <text
+    x="400" y="370"
+    text-anchor="middle"
+    font-family="'Cinzel', 'Trajan Pro', 'Times New Roman', serif"
+    font-size="11"
+    font-weight="400"
+    letter-spacing="5"
+    fill="#888"
+    opacity="0.6"
+  >AI COLOSSEUM ON MONAD</text>
+</svg>

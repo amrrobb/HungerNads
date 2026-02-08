@@ -76,8 +76,9 @@ export interface InternalEvent {
   data: Record<string, unknown>;
 }
 
-// Epoch interval: 5 minutes
-const EPOCH_INTERVAL_MS = 300_000;
+// Epoch interval: configurable via EPOCH_INTERVAL_MS env var (default 5 min)
+// For demo: set EPOCH_INTERVAL_MS=15000 (15 seconds) in .dev.vars
+const DEFAULT_EPOCH_INTERVAL_MS = 300_000;
 
 // ─── Agent Factory ────────────────────────────────────────────────
 
@@ -128,7 +129,7 @@ function createAgentFromState(agent: BattleAgent, llmKeys?: LLMKeys): BaseAgent 
 function reconstructArena(battleState: BattleState, llmKeys?: LLMKeys): ArenaManager {
   const arena = new ArenaManager(battleState.battleId, {
     maxEpochs: 100,
-    epochIntervalMs: EPOCH_INTERVAL_MS,
+    epochIntervalMs: DEFAULT_EPOCH_INTERVAL_MS,
   });
 
   // Manually set internal state to match stored battle
@@ -185,10 +186,16 @@ export class ArenaDO implements DurableObject {
   /** Unsubscribe callback for the curve stream event listener. */
   private curveStreamUnsub: (() => void) | null = null;
 
+  /** Resolved epoch interval in ms. */
+  private epochIntervalMs: number;
+
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
     this.env = env;
     this.priceFeed = new PriceFeed();
+    this.epochIntervalMs = env.EPOCH_INTERVAL_MS
+      ? parseInt(env.EPOCH_INTERVAL_MS, 10)
+      : DEFAULT_EPOCH_INTERVAL_MS;
 
     // Eagerly create the NadFun client (graceful if env vars are missing)
     this.nadFunClient = createNadFunClient({
@@ -204,16 +211,22 @@ export class ArenaDO implements DurableObject {
    * Initialize a new battle with the given agent IDs.
    * Sets up initial state and schedules the first epoch alarm.
    */
-  async startBattle(agentIds: string[]): Promise<BattleState> {
-    const battleId = crypto.randomUUID();
-
+  async startBattle(
+    battleId: string,
+    agentIds: string[],
+    agentClasses?: string[],
+    agentNames?: string[],
+  ): Promise<BattleState> {
     // Initialize agent states
     const agents: Record<string, BattleAgent> = {};
-    for (const agentId of agentIds) {
+    for (let i = 0; i < agentIds.length; i++) {
+      const agentId = agentIds[i];
+      const agentClass = (agentClasses?.[i] ?? 'WARRIOR') as AgentClass;
+      const agentName = agentNames?.[i] ?? `${agentClass}-${agentId.slice(0, 6)}`;
       agents[agentId] = {
         id: agentId,
-        name: `Agent-${agentId.slice(0, 6)}`,
-        class: 'WARRIOR', // Default; will be set by caller or agent DO
+        name: agentName,
+        class: agentClass,
         hp: 1000,
         maxHp: 1000,
         isAlive: true,
@@ -236,7 +249,7 @@ export class ArenaDO implements DurableObject {
     await this.state.storage.put('battleState', battleState);
 
     // Schedule the first epoch
-    await this.state.storage.setAlarm(Date.now() + EPOCH_INTERVAL_MS);
+    await this.state.storage.setAlarm(Date.now() + this.epochIntervalMs);
 
     // Broadcast battle start
     this.broadcastInternal({
@@ -293,7 +306,7 @@ export class ArenaDO implements DurableObject {
     } catch (err) {
       console.error(`[ArenaDO] Epoch processing failed:`, err);
       // On failure, don't crash the DO - just skip this epoch and retry
-      await this.state.storage.setAlarm(Date.now() + EPOCH_INTERVAL_MS);
+      await this.state.storage.setAlarm(Date.now() + this.epochIntervalMs);
       return;
     }
 
@@ -331,7 +344,7 @@ export class ArenaDO implements DurableObject {
       }
     } else {
       // Schedule next epoch
-      await this.state.storage.setAlarm(Date.now() + EPOCH_INTERVAL_MS);
+      await this.state.storage.setAlarm(Date.now() + this.epochIntervalMs);
     }
 
     // Persist updated state
@@ -489,14 +502,20 @@ export class ArenaDO implements DurableObject {
 
     // Start a new battle
     if (url.pathname === '/start' && request.method === 'POST') {
-      const body = (await request.json()) as { agentIds?: string[] };
+      const body = (await request.json()) as {
+        battleId?: string;
+        agentIds?: string[];
+        agentClasses?: string[];
+        agentNames?: string[];
+      };
       const agentIds = body.agentIds;
 
       if (!agentIds || !Array.isArray(agentIds) || agentIds.length < 2) {
         return Response.json({ error: 'Provide at least 2 agentIds' }, { status: 400 });
       }
 
-      const battleState = await this.startBattle(agentIds);
+      const bid = body.battleId ?? crypto.randomUUID();
+      const battleState = await this.startBattle(bid, agentIds, body.agentClasses, body.agentNames);
       return Response.json({ ok: true, battle: battleState });
     }
 

@@ -134,12 +134,17 @@ app.post('/battle/start', async (c) => {
     const arenaId = c.env.ARENA_DO.idFromName(battleId);
     const arenaStub = c.env.ARENA_DO.get(arenaId);
 
-    // Start the battle via ArenaDO
+    // Build agent names for the DO
+    const agentNames = agentIds.map(
+      (id: string, i: number) => `${agentClasses[i]}-${id.slice(0, 6)}`,
+    );
+
+    // Start the battle via ArenaDO (pass battleId, classes, and names)
     const startResponse = await arenaStub.fetch(
       new Request('http://arena/start', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ agentIds }),
+        body: JSON.stringify({ battleId, agentIds, agentClasses, agentNames }),
       }),
     );
 
@@ -183,7 +188,11 @@ app.get('/battle/:id', async (c) => {
     );
 
     if (stateResponse.ok) {
-      const state = await stateResponse.json();
+      const state = await stateResponse.json() as Record<string, unknown>;
+      // Normalize agents from Record<string, BattleAgent> to array for dashboard
+      if (state.agents && !Array.isArray(state.agents)) {
+        state.agents = Object.values(state.agents);
+      }
       return c.json(state);
     }
 

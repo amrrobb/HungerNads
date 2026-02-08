@@ -14,6 +14,7 @@
 
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useAccount, useReadContract } from 'wagmi';
 import { formatUnits } from 'viem';
 import { HNADS_TOKEN_ADDRESS } from '@/lib/wallet';
@@ -51,7 +52,10 @@ function formatBalance(raw: bigint, decimals: number = 18): string {
 // ─── Component ───────────────────────────────────────────────────────
 
 export default function TokenInfo() {
+  const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
+
+  useEffect(() => setMounted(true), []);
   const {
     pricePerToken,
     graduated,
@@ -127,7 +131,7 @@ export default function TokenInfo() {
       )}
 
       {/* ── Wallet Balance ── */}
-      {isConnected && balanceRaw != null && (
+      {mounted && isConnected && balanceRaw != null && (
         <div
           className="flex items-center gap-1 border-l border-colosseum-surface-light pl-2"
           title="Your $HNADS balance"

@@ -31,6 +31,7 @@ export interface Env {
   ARENA_CONTRACT_ADDRESS?: string;
   BETTING_CONTRACT_ADDRESS?: string;
   NADFUN_TOKEN_ADDRESS?: string;
+  EPOCH_INTERVAL_MS?: string;
 
   // Vars
   ENVIRONMENT: string;

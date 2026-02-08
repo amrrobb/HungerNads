@@ -407,7 +407,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
       {/* Battle header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-blood">
+          <h1 className="font-cinzel text-2xl font-black tracking-wider text-gold">
             BATTLE #{battleId}
           </h1>
           {winner ? (
@@ -415,7 +415,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
               FINISHED
             </span>
           ) : (
-            <span className="rounded bg-blood/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-blood animate-pulse">
+            <span className="rounded bg-green-500/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-green-400 animate-pulse">
               LIVE
             </span>
           )}
@@ -449,7 +449,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
       {/* Winner announcement */}
       {winner && (
         <div className="rounded-lg border border-gold/40 bg-gold/10 p-4 text-center">
-          <div className="text-2xl font-black tracking-widest text-gold">
+          <div className="font-cinzel text-2xl font-black tracking-widest text-gold">
             VICTORY
           </div>
           <div className="mt-1 text-sm text-white">

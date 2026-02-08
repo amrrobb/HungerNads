@@ -31,6 +31,7 @@ const config: Config = {
         },
       },
       fontFamily: {
+        cinzel: ["var(--font-cinzel)", "Cinzel", "Trajan Pro", "serif"],
         mono: [
           "ui-monospace",
           "SFMono-Regular",

@@ -5,7 +5,6 @@ import { useAccount, useConnect } from "wagmi";
 import { injected } from "wagmi/connectors";
 import type { AgentState } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
-import { usePlaceBet } from "@/lib/contracts";
 import useFetch from "@/hooks/useFetch";
 
 // ---------------------------------------------------------------------------
@@ -72,32 +71,7 @@ export default function BettingPanel({ agents, battleId }: BettingPanelProps) {
     { skip: !isConnected || !address },
   );
 
-  // ── On-chain bet via wagmi ──
-  const {
-    placeBet: onChainPlaceBet,
-    isPending: isBetPending,
-    isSuccess: isBetSuccess,
-    error: betError,
-  } = usePlaceBet();
-
-  // Reset form on successful bet
-  useEffect(() => {
-    if (isBetSuccess) {
-      setBetAmount("");
-      setSelectedAgentId("");
-      setBetSuccess(true);
-      refetchUserBets();
-      const timer = setTimeout(() => setBetSuccess(false), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [isBetSuccess, refetchUserBets]);
-
-  // Surface contract errors
-  useEffect(() => {
-    if (betError) {
-      setError(betError.message.slice(0, 120));
-    }
-  }, [betError]);
+  const [isBetPending, setIsBetPending] = useState(false);
 
   const aliveAgents = useMemo(() => agents.filter((a) => a.alive), [agents]);
 
@@ -160,27 +134,12 @@ export default function BettingPanel({ agents, battleId }: BettingPanelProps) {
       return;
     }
     if (!validate()) return;
-
-    // Find the numeric index of the selected agent for the on-chain call.
-    // The contract uses uint256 agentId — we use the agent's index in the
-    // alive list as a simple mapping. For off-chain fallback we use the UUID.
-    const agentIndex = agents.findIndex((a) => a.id === selectedAgentId);
-
-    // Try on-chain bet first
-    try {
-      onChainPlaceBet({
-        battleId,
-        agentId: agentIndex >= 0 ? agentIndex : 0,
-        amountMon: betAmount,
-      });
-    } catch {
-      // If on-chain fails (e.g. contract not deployed), fall back to off-chain
-      placeBetOffChain();
-    }
+    placeBetOffChain();
   }
 
   async function placeBetOffChain() {
     setError("");
+    setIsBetPending(true);
     const API_BASE =
       process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8787";
     try {
@@ -209,6 +168,8 @@ export default function BettingPanel({ agents, battleId }: BettingPanelProps) {
       setTimeout(() => setBetSuccess(false), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsBetPending(false);
     }
   }
 
@@ -336,7 +297,7 @@ export default function BettingPanel({ agents, battleId }: BettingPanelProps) {
           disabled={isSubmitting}
           className={`w-full rounded py-2.5 text-sm font-bold uppercase tracking-wider transition-all ${
             isConnected
-              ? "bg-blood text-white hover:bg-blood-dark active:scale-[0.98] disabled:opacity-60"
+              ? "bg-green-600 text-white hover:bg-green-700 active:scale-[0.98] disabled:opacity-60"
               : "bg-gold/20 text-gold hover:bg-gold/30"
           }`}
         >

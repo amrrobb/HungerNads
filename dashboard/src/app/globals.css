@@ -5,24 +5,24 @@
 @layer base {
   body {
     background-color: #0a0a0f;
-    color: #e5e5e5;
+    color: #d4c5a0;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
       "Liberation Mono", "Courier New", monospace;
   }
 
   ::selection {
-    background-color: rgba(220, 38, 38, 0.3);
+    background-color: rgba(245, 158, 11, 0.3);
     color: #ffffff;
   }
 }
 
 @layer components {
   .nav-link {
-    @apply px-3 py-2 text-sm font-medium text-gray-400 transition-colors hover:text-blood;
+    @apply px-3 py-2 text-sm font-medium text-[#a89870] transition-colors hover:text-gold;
   }
 
   .nav-link-active {
-    @apply text-blood;
+    @apply text-gold;
   }
 
   .card {

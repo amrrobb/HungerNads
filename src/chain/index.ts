@@ -2,7 +2,7 @@
  * HUNGERNADS - Chain Module
  *
  * On-chain integration with HungernadsArena and HungernadsBetting
- * contracts on Monad testnet via viem.
+ * contracts on Monad testnet via viem, plus nad.fun token operations.
  */
 
 export {
@@ -17,3 +17,9 @@ export {
 } from './client';
 
 export { hungernadsArenaAbi, hungernadsBettingAbi } from './abis';
+
+export {
+  NadFunClient,
+  createNadFunClient,
+  type NadFunConfig,
+} from './nadfun';

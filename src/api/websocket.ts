@@ -22,6 +22,7 @@ import type { PredictionResult } from '../arena/prediction';
 import type { CombatResult } from '../arena/combat';
 import type { DeathEvent } from '../arena/death';
 import type { MarketData } from '../agents/schemas';
+import type { CurveEvent } from '../chain/nadfun';
 
 // ─── Event Types ──────────────────────────────────────────────────────────────
 
@@ -97,6 +98,44 @@ export interface OddsUpdateEvent {
   };
 }
 
+// ─── Token / Curve Events (nad.fun streaming) ─────────────────────────────────
+
+export interface TokenBuyEvent {
+  type: 'token_buy';
+  data: {
+    sender: string;
+    token: string;
+    amountIn: string;   // MON spent (wei as string for JSON safety)
+    amountOut: string;   // tokens received (wei as string)
+    txHash: string;
+    blockNumber: string;
+  };
+}
+
+export interface TokenSellEvent {
+  type: 'token_sell';
+  data: {
+    sender: string;
+    token: string;
+    amountIn: string;   // tokens sold (wei as string)
+    amountOut: string;   // MON received (wei as string)
+    txHash: string;
+    blockNumber: string;
+  };
+}
+
+export interface CurveUpdateEvent {
+  type: 'curve_update';
+  data: {
+    eventKind: 'Create' | 'Sync' | 'Graduate' | 'TokenLocked';
+    token: string;
+    txHash: string;
+    blockNumber: string;
+    /** Extra payload varies by eventKind — kept as a flat key/value map. */
+    details: Record<string, string>;
+  };
+}
+
 /** Discriminated union of all events streamed to spectators. */
 export type BattleEvent =
   | EpochStartEvent
@@ -106,7 +145,10 @@ export type BattleEvent =
   | AgentDeathEvent
   | EpochEndEvent
   | BattleEndEvent
-  | OddsUpdateEvent;
+  | OddsUpdateEvent
+  | TokenBuyEvent
+  | TokenSellEvent
+  | CurveUpdateEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 
@@ -136,6 +178,105 @@ export function broadcastEvent(sessions: WebSocket[], event: BattleEvent): void 
 export function broadcastEvents(sessions: WebSocket[], events: BattleEvent[]): void {
   for (const event of events) {
     broadcastEvent(sessions, event);
+  }
+}
+
+// ─── CurveEvent -> BattleEvent Conversion ─────────────────────────────────────
+
+/**
+ * Convert a nad.fun SDK CurveEvent into a BattleEvent for WebSocket broadcast.
+ *
+ * Buy and Sell events are mapped to `token_buy` / `token_sell`.
+ * All other events (Create, Sync, Graduate, TokenLocked) are mapped to
+ * `curve_update` with the event-specific fields packed into `details`.
+ */
+export function curveEventToBattleEvent(evt: CurveEvent): BattleEvent {
+  const base = {
+    txHash: evt.transactionHash,
+    blockNumber: evt.blockNumber.toString(),
+  };
+
+  switch (evt.type) {
+    case 'Buy':
+      return {
+        type: 'token_buy',
+        data: {
+          sender: evt.sender,
+          token: evt.token,
+          amountIn: evt.amountIn.toString(),
+          amountOut: evt.amountOut.toString(),
+          ...base,
+        },
+      };
+
+    case 'Sell':
+      return {
+        type: 'token_sell',
+        data: {
+          sender: evt.sender,
+          token: evt.token,
+          amountIn: evt.amountIn.toString(),
+          amountOut: evt.amountOut.toString(),
+          ...base,
+        },
+      };
+
+    case 'Create':
+      return {
+        type: 'curve_update',
+        data: {
+          eventKind: 'Create',
+          token: evt.token,
+          ...base,
+          details: {
+            creator: evt.creator,
+            pool: evt.pool,
+            name: evt.name,
+            symbol: evt.symbol,
+            tokenURI: evt.tokenURI,
+          },
+        },
+      };
+
+    case 'Sync':
+      return {
+        type: 'curve_update',
+        data: {
+          eventKind: 'Sync',
+          token: evt.token,
+          ...base,
+          details: {
+            realMonReserve: evt.realMonReserve.toString(),
+            realTokenReserve: evt.realTokenReserve.toString(),
+            virtualMonReserve: evt.virtualMonReserve.toString(),
+            virtualTokenReserve: evt.virtualTokenReserve.toString(),
+          },
+        },
+      };
+
+    case 'Graduate':
+      return {
+        type: 'curve_update',
+        data: {
+          eventKind: 'Graduate',
+          token: evt.token,
+          ...base,
+          details: {
+            pool: evt.pool,
+          },
+        },
+      };
+
+    case 'TokenLocked':
+      return {
+        type: 'curve_update',
+        data: {
+          eventKind: 'TokenLocked',
+          token: evt.token,
+          ...base,
+          details: {},
+        },
+      };
   }
 }
 

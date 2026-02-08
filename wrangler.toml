@@ -7,7 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "hungernads-db"
-database_id = "placeholder-replace-after-d1-create"
+database_id = "21d13795-1877-496a-9f05-a20b9095cc19"
 migrations_dir = "src/db/migrations"
 
 # ─── Durable Objects ────────────────────────────────────────────
@@ -24,7 +24,7 @@ new_classes = ["AgentDO", "ArenaDO"]
 # ─── KV Namespaces ──────────────────────────────────────────────
 [[kv_namespaces]]
 binding = "CACHE"
-id = "placeholder-replace-after-kv-create"
+id = "b98c675ff0f442de8f997a714e360cd3"
 
 # ─── Environment Variables (non-secret) ─────────────────────────
 [vars]
@@ -33,12 +33,14 @@ PYTH_ENDPOINT = "https://hermes.pyth.network"
 
 # ─── Secrets (set via `wrangler secret put`) ──────────────────────
 # MONAD_RPC_URL              = Monad testnet RPC endpoint
+# MONAD_WS_URL               = Monad testnet WSS endpoint (for curve streaming)
 # PRIVATE_KEY                = Worker oracle wallet private key (0x-prefixed)
 # ARENA_CONTRACT_ADDRESS     = Deployed HungernadsArena address
 # BETTING_CONTRACT_ADDRESS   = Deployed HungernadsBetting address
 # GROQ_API_KEY               = Groq LLM API key
 # GOOGLE_API_KEY             = Google AI API key
 # OPENROUTER_API_KEY         = OpenRouter API key
+# NADFUN_TOKEN_ADDRESS       = $HNADS token address on nad.fun (set after creation)
 
 # ─── Dev settings ───────────────────────────────────────────────
 [dev]

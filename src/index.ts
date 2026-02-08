@@ -26,9 +26,11 @@ export interface Env {
   GOOGLE_API_KEY?: string;
   OPENROUTER_API_KEY?: string;
   MONAD_RPC_URL?: string;
+  MONAD_WS_URL?: string;
   PRIVATE_KEY?: string;
   ARENA_CONTRACT_ADDRESS?: string;
   BETTING_CONTRACT_ADDRESS?: string;
+  NADFUN_TOKEN_ADDRESS?: string;
 
   // Vars
   ENVIRONMENT: string;

@@ -22,6 +22,13 @@ import {
 } from '../db/schema';
 import { AGENT_CLASSES } from '../agents';
 import { SponsorshipManager, BettingPool, calculateOdds, buildOddsInputs } from '../betting';
+import {
+  createNadFunClient,
+  parseEther,
+  formatEther,
+  type NadFunClient,
+  type Address,
+} from '../chain/nadfun';
 
 // ─── App Setup ──────────────────────────────────────────────────
 
@@ -66,6 +73,10 @@ app.get('/', (c) => {
       battleOdds: 'GET /battle/:id/odds',
       battleSponsors: 'GET /battle/:id/sponsors',
       placeBet: 'POST /bet',
+      betBuy: 'POST /bet/buy',
+      betSell: 'POST /bet/sell',
+      tokenPrice: 'GET /token/price',
+      tokenProgress: 'GET /token/progress',
       sponsor: 'POST /sponsor',
       userBets: 'GET /user/:address/bets',
       battleStream: 'WS /battle/:id/stream',
@@ -572,6 +583,317 @@ app.get('/battle/:id/sponsors', async (c) => {
     console.error('Failed to get sponsorships:', error);
     return c.json(
       { error: 'Failed to get sponsorships', detail: String(error) },
+      500,
+    );
+  }
+});
+
+// ─── nad.fun Token / On-Chain Betting ─────────────────────────
+
+/**
+ * Helper: build a NadFunClient from env vars.
+ * Returns null if MONAD_RPC_URL or PRIVATE_KEY is missing.
+ */
+function getNadFunClient(env: Env): NadFunClient | null {
+  return createNadFunClient(env);
+}
+
+/**
+ * Helper: resolve the $HNADS token address from env.
+ * Returns null if NADFUN_TOKEN_ADDRESS is not set.
+ */
+function getTokenAddress(env: Env): Address | null {
+  const addr = env.NADFUN_TOKEN_ADDRESS;
+  if (!addr) return null;
+  return addr as Address;
+}
+
+/**
+ * POST /bet/buy
+ *
+ * Buy $HNADS via nad.fun SDK to place a bet.
+ * Wraps NadFunClient.buyToken (simpleBuy under the hood).
+ *
+ * Body:
+ *   - battleId:        string   (required) battle to bet on
+ *   - agentId:         string   (required) agent to bet on
+ *   - amountInMon:     string   (required) MON to spend, in ether units (e.g. "0.5")
+ *   - slippagePercent: number   (optional, default 1)
+ *
+ * On success, also records the bet in the off-chain BettingPool for odds
+ * tracking and leaderboard purposes.
+ */
+app.post('/bet/buy', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { battleId, agentId, amountInMon, slippagePercent } = body as {
+      battleId?: string;
+      agentId?: string;
+      amountInMon?: string;
+      slippagePercent?: number;
+    };
+
+    if (!battleId || !agentId || !amountInMon) {
+      return c.json(
+        { error: 'Missing required fields: battleId, agentId, amountInMon' },
+        400,
+      );
+    }
+
+    // Validate amount
+    let amountWei: bigint;
+    try {
+      amountWei = parseEther(amountInMon);
+    } catch {
+      return c.json({ error: 'Invalid amountInMon — must be a decimal string (e.g. "0.5")' }, 400);
+    }
+    if (amountWei <= 0n) {
+      return c.json({ error: 'amountInMon must be positive' }, 400);
+    }
+
+    // Verify battle is bettable
+    const battle = await getBattle(c.env.DB, battleId);
+    if (!battle) {
+      return c.json({ error: 'Battle not found' }, 404);
+    }
+    if (battle.status !== 'betting' && battle.status !== 'active') {
+      return c.json(
+        { error: `Cannot bet on battle with status '${battle.status}'` },
+        400,
+      );
+    }
+
+    // Build nad.fun client
+    const client = getNadFunClient(c.env);
+    if (!client) {
+      return c.json(
+        {
+          error: 'nad.fun integration not configured',
+          hint: 'MONAD_RPC_URL and PRIVATE_KEY must be set. Use POST /bet for off-chain betting.',
+        },
+        503,
+      );
+    }
+
+    const tokenAddress = getTokenAddress(c.env);
+    if (!tokenAddress) {
+      return c.json(
+        { error: 'NADFUN_TOKEN_ADDRESS is not configured' },
+        503,
+      );
+    }
+
+    // Execute the buy on-chain
+    const txHash = await client.buyToken(
+      tokenAddress,
+      amountWei,
+      slippagePercent ?? 1,
+    );
+
+    // Record in off-chain pool for odds/leaderboard tracking
+    const pool = new BettingPool(c.env.DB);
+    const betRecord = await pool.placeBet(
+      battleId,
+      client.walletAddress,
+      agentId,
+      Number(formatEther(amountWei)),
+    );
+
+    return c.json({
+      ok: true,
+      txHash,
+      tokenAddress,
+      amountInMon,
+      bet: betRecord,
+    });
+  } catch (error) {
+    console.error('Failed to buy $HNADS:', error);
+    return c.json(
+      { error: 'Failed to buy $HNADS', detail: String(error) },
+      500,
+    );
+  }
+});
+
+/**
+ * POST /bet/sell
+ *
+ * Sell $HNADS position via nad.fun SDK.
+ * Wraps NadFunClient.sellToken (simpleSell under the hood).
+ *
+ * Body:
+ *   - amountInTokens:  string   (required) tokens to sell, in ether units (e.g. "100")
+ *   - slippagePercent: number   (optional, default 1)
+ */
+app.post('/bet/sell', async (c) => {
+  try {
+    const body = await c.req.json();
+    const { amountInTokens, slippagePercent } = body as {
+      amountInTokens?: string;
+      slippagePercent?: number;
+    };
+
+    if (!amountInTokens) {
+      return c.json({ error: 'Missing required field: amountInTokens' }, 400);
+    }
+
+    let amountWei: bigint;
+    try {
+      amountWei = parseEther(amountInTokens);
+    } catch {
+      return c.json(
+        { error: 'Invalid amountInTokens — must be a decimal string (e.g. "100")' },
+        400,
+      );
+    }
+    if (amountWei <= 0n) {
+      return c.json({ error: 'amountInTokens must be positive' }, 400);
+    }
+
+    const client = getNadFunClient(c.env);
+    if (!client) {
+      return c.json(
+        {
+          error: 'nad.fun integration not configured',
+          hint: 'MONAD_RPC_URL and PRIVATE_KEY must be set.',
+        },
+        503,
+      );
+    }
+
+    const tokenAddress = getTokenAddress(c.env);
+    if (!tokenAddress) {
+      return c.json({ error: 'NADFUN_TOKEN_ADDRESS is not configured' }, 503);
+    }
+
+    const txHash = await client.sellToken(
+      tokenAddress,
+      amountWei,
+      slippagePercent ?? 1,
+    );
+
+    return c.json({
+      ok: true,
+      txHash,
+      tokenAddress,
+      amountSold: amountInTokens,
+    });
+  } catch (error) {
+    console.error('Failed to sell $HNADS:', error);
+    return c.json(
+      { error: 'Failed to sell $HNADS', detail: String(error) },
+      500,
+    );
+  }
+});
+
+/**
+ * GET /token/price
+ *
+ * Get current $HNADS price from the bonding curve via getAmountOut.
+ * Query params:
+ *   - amount: string (optional, default "1") — MON amount for quote
+ */
+app.get('/token/price', async (c) => {
+  try {
+    const client = getNadFunClient(c.env);
+    if (!client) {
+      return c.json(
+        {
+          error: 'nad.fun integration not configured',
+          hint: 'MONAD_RPC_URL and PRIVATE_KEY must be set.',
+        },
+        503,
+      );
+    }
+
+    const tokenAddress = getTokenAddress(c.env);
+    if (!tokenAddress) {
+      return c.json({ error: 'NADFUN_TOKEN_ADDRESS is not configured' }, 503);
+    }
+
+    const amountStr = c.req.query('amount') ?? '1';
+    let amountWei: bigint;
+    try {
+      amountWei = parseEther(amountStr);
+    } catch {
+      return c.json({ error: 'Invalid amount — must be a decimal string' }, 400);
+    }
+
+    // Buy quote: how many tokens you get for `amount` MON
+    const buyQuote = await client.getQuote(tokenAddress, amountWei, true);
+    // Sell quote: how much MON you get for `amount` tokens
+    const sellQuote = await client.getQuote(tokenAddress, amountWei, false);
+
+    const graduated = await client.isGraduated(tokenAddress);
+
+    return c.json({
+      tokenAddress,
+      quotedAmountMon: amountStr,
+      buyQuote: {
+        tokensOut: formatEther(buyQuote.amount),
+        router: buyQuote.router,
+      },
+      sellQuote: {
+        monOut: formatEther(sellQuote.amount),
+        router: sellQuote.router,
+      },
+      graduated,
+    });
+  } catch (error) {
+    console.error('Failed to get token price:', error);
+    return c.json(
+      { error: 'Failed to get token price', detail: String(error) },
+      500,
+    );
+  }
+});
+
+/**
+ * GET /token/progress
+ *
+ * Bonding curve graduation progress for $HNADS.
+ * Returns progress value, curve reserves, and graduation status.
+ */
+app.get('/token/progress', async (c) => {
+  try {
+    const client = getNadFunClient(c.env);
+    if (!client) {
+      return c.json(
+        {
+          error: 'nad.fun integration not configured',
+          hint: 'MONAD_RPC_URL and PRIVATE_KEY must be set.',
+        },
+        503,
+      );
+    }
+
+    const tokenAddress = getTokenAddress(c.env);
+    if (!tokenAddress) {
+      return c.json({ error: 'NADFUN_TOKEN_ADDRESS is not configured' }, 503);
+    }
+
+    const [progress, curveState, graduated] = await Promise.all([
+      client.getProgress(tokenAddress),
+      client.getCurveState(tokenAddress),
+      client.isGraduated(tokenAddress),
+    ]);
+
+    return c.json({
+      tokenAddress,
+      progress: progress.toString(),
+      graduated,
+      curve: {
+        virtualMonReserve: formatEther(curveState.virtualMonReserve),
+        virtualTokenReserve: formatEther(curveState.virtualTokenReserve),
+        k: curveState.k.toString(),
+        targetTokenAmount: formatEther(curveState.targetTokenAmount),
+      },
+    });
+  } catch (error) {
+    console.error('Failed to get token progress:', error);
+    return c.json(
+      { error: 'Failed to get token progress', detail: String(error) },
       500,
     );
   }

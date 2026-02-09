@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" width="800" height="200">
+  <defs>
+    <!-- Gold gradient matching the icon -->
+    <linearGradient id="gold" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#F4D03F"/>
+      <stop offset="40%" stop-color="#DAA520"/>
+      <stop offset="100%" stop-color="#B8860B"/>
+    </linearGradient>
+    <!-- Subtle inner shadow -->
+    <linearGradient id="goldStroke" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFF5CC"/>
+      <stop offset="100%" stop-color="#C5941A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- HUNGERNADS - Hunger Games inspired angular serif style -->
+  <!-- Using a tall, narrow, sharp-pointed letterform approach -->
+  <text
+    x="400" y="130"
+    text-anchor="middle"
+    font-family="'Cinzel', 'Trajan Pro', 'Times New Roman', serif"
+    font-size="96"
+    font-weight="700"
+    letter-spacing="18"
+    fill="url(#gold)"
+    stroke="url(#goldStroke)"
+    stroke-width="0.5"
+  >HUNGERNADS</text>
+
+  <!-- Thin decorative lines (like Hunger Games movie titles) -->
+  <line x1="80" y1="155" x2="360" y2="155" stroke="#DAA520" stroke-width="1" opacity="0.7"/>
+  <line x1="440" y1="155" x2="720" y2="155" stroke="#DAA520" stroke-width="1" opacity="0.7"/>
+
+  <!-- Small diamond separator (matching icon frame shape) -->
+  <polygon points="400,148 408,155 400,162 392,155" fill="#DAA520" opacity="0.8"/>
+
+  <!-- Tagline -->
+  <text
+    x="400" y="180"
+    text-anchor="middle"
+    font-family="'Cinzel', 'Trajan Pro', 'Times New Roman', serif"
+    font-size="16"
+    font-weight="400"
+    letter-spacing="8"
+    fill="#DAA520"
+    opacity="0.8"
+  >MAY THE NADS BE EVER IN YOUR FAVOR</text>
+</svg>

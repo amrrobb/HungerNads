@@ -1,0 +1,175 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    background-color: #0a0a0f;
+    color: #d4c5a0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+      "Liberation Mono", "Courier New", monospace;
+    /* Prevent iOS text size inflation */
+    -webkit-text-size-adjust: 100%;
+  }
+
+  ::selection {
+    background-color: rgba(245, 158, 11, 0.3);
+    color: #ffffff;
+  }
+
+  /* Faster taps on all interactive elements (remove 300ms delay) */
+  button,
+  a,
+  select,
+  input,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  /* Prevent pull-to-refresh on overscrollable areas */
+  .overscroll-none {
+    overscroll-behavior: none;
+  }
+}
+
+@layer components {
+  .nav-link {
+    @apply px-3 py-2 text-sm font-medium text-[#a89870] transition-colors hover:text-gold;
+  }
+
+  .nav-link-active {
+    @apply text-gold;
+  }
+
+  .card {
+    @apply rounded-lg border border-colosseum-surface-light bg-colosseum-surface p-4;
+  }
+
+  .badge-warrior {
+    @apply rounded bg-blood/20 px-2 py-0.5 text-xs text-blood;
+  }
+
+  .badge-trader {
+    @apply rounded bg-blue-500/20 px-2 py-0.5 text-xs text-blue-400;
+  }
+
+  .badge-survivor {
+    @apply rounded bg-green-500/20 px-2 py-0.5 text-xs text-green-400;
+  }
+
+  .badge-parasite {
+    @apply rounded bg-accent/20 px-2 py-0.5 text-xs text-accent-light;
+  }
+
+  .badge-gambler {
+    @apply rounded bg-gold/20 px-2 py-0.5 text-xs text-gold;
+  }
+}
+
+@layer utilities {
+  /* Thin scrollbar for action feed */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: #252540 transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    width: 4px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: #252540;
+    border-radius: 9999px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: #363660;
+  }
+
+  /* ──────────────────────────────────────────────
+     Battle animation utility classes
+     ────────────────────────────────────────────── */
+
+  /* REKT / death overlay: grayscale card + dramatic red glow text */
+  .agent-rekt {
+    @apply grayscale;
+    filter: grayscale(1) brightness(0.6);
+  }
+  .agent-rekt .rekt-text {
+    @apply animate-rekt-glow;
+  }
+
+  /* Attacker: pulsing red border */
+  .agent-attacking {
+    @apply animate-attack-pulse border-2;
+  }
+
+  /* Attack target: brief flash */
+  .agent-attacked {
+    @apply animate-hit-flash;
+  }
+
+  /* Defender: blue/purple shield glow */
+  .agent-defending {
+    @apply animate-shield-glow border-2;
+  }
+
+  /* Prediction result flashes */
+  .prediction-correct {
+    @apply animate-predict-correct border-2;
+  }
+  .prediction-wrong {
+    @apply animate-predict-wrong border-2;
+  }
+
+  /* Winner: gold aura */
+  .agent-winner {
+    @apply animate-winner-glow border-2;
+  }
+
+  /* Epoch countdown < 30s */
+  .epoch-urgent {
+    @apply animate-countdown-urgent;
+  }
+
+  /* HP bar smooth transitions (fallback for non-Tailwind inline styles) */
+  .hp-bar-fill {
+    transition: width 700ms cubic-bezier(0.4, 0, 0.2, 1),
+      background-color 500ms ease;
+  }
+
+  /* Death card vignette overlay */
+  .death-vignette {
+    background: radial-gradient(
+      ellipse at center,
+      transparent 40%,
+      rgba(220, 38, 38, 0.08) 100%
+    );
+  }
+
+  /* Feed entry slide-in */
+  .feed-entry {
+    @apply animate-feed-enter;
+  }
+
+  /* Stream feed entry -- compact slide-in */
+  .stream-feed-entry {
+    @apply animate-feed-enter;
+  }
+
+  /* ──────────────────────────────────────────────
+     Stream overlay utilities
+     ────────────────────────────────────────────── */
+
+  /* Stream layout: strip body background for OBS transparency */
+  .stream-layout {
+    background-color: #0a0a0f;
+    color: #d4c5a0;
+  }
+
+  /* When bg-transparent is applied, make truly transparent for OBS chroma key */
+  .stream-layout .bg-transparent {
+    background-color: transparent !important;
+  }
+}

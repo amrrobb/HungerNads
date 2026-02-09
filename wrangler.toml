@@ -1,0 +1,48 @@
+name = "hungernads"
+main = "src/index.ts"
+compatibility_date = "2024-12-30"
+compatibility_flags = ["nodejs_compat"]
+
+# ─── D1 Database ────────────────────────────────────────────────
+[[d1_databases]]
+binding = "DB"
+database_name = "hungernads-db"
+database_id = "21d13795-1877-496a-9f05-a20b9095cc19"
+migrations_dir = "src/db/migrations"
+
+# ─── Durable Objects ────────────────────────────────────────────
+[durable_objects]
+bindings = [
+  { name = "AGENT_DO", class_name = "AgentDO" },
+  { name = "ARENA_DO", class_name = "ArenaDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AgentDO", "ArenaDO"]
+
+# ─── KV Namespaces ──────────────────────────────────────────────
+[[kv_namespaces]]
+binding = "CACHE"
+id = "b98c675ff0f442de8f997a714e360cd3"
+
+# ─── Environment Variables (non-secret) ─────────────────────────
+[vars]
+ENVIRONMENT = "production"
+PYTH_ENDPOINT = "https://hermes.pyth.network"
+
+# ─── Secrets (set via `wrangler secret put`) ──────────────────────
+# MONAD_RPC_URL              = Monad testnet RPC endpoint
+# MONAD_WS_URL               = Monad testnet WSS endpoint (for curve streaming)
+# PRIVATE_KEY                = Worker oracle wallet private key (0x-prefixed)
+# ARENA_CONTRACT_ADDRESS     = Deployed HungernadsArena address
+# BETTING_CONTRACT_ADDRESS   = Deployed HungernadsBetting address
+# GROQ_API_KEY               = Groq LLM API key
+# GOOGLE_API_KEY             = Google AI API key
+# OPENROUTER_API_KEY         = OpenRouter API key
+# NADFUN_TOKEN_ADDRESS       = $HNADS token address on nad.fun (set after creation)
+# MOLTBOOK_API_KEY           = Moltbook API key for /m/hungernads submolt posting
+
+# ─── Dev settings ───────────────────────────────────────────────
+[dev]
+port = 8787

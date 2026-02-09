@@ -5,6 +5,7 @@ import { useAccount, useConnect } from "wagmi";
 import { injected } from "wagmi/connectors";
 import type { AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -138,7 +139,13 @@ export default function BetSlip({
       {/* Header with agent info */}
       <div className="flex items-center justify-between border-b border-colosseum-surface-light bg-colosseum-bg/50 px-3 py-2">
         <div className="flex items-center gap-2">
-          <span className="text-base">{cfg.emoji}</span>
+          <AgentPortrait
+            image={cfg.image}
+            emoji={cfg.emoji}
+            alt={agent.name}
+            size="w-6 h-6"
+            className="text-base"
+          />
           <div>
             <div className="text-xs font-bold text-white">{agent.name}</div>
             <div className={`text-[10px] ${cfg.color}`}>{agent.class}</div>

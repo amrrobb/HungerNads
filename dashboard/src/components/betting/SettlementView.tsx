@@ -3,6 +3,7 @@
 import { useMemo } from "react";
 import type { AgentState, AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,7 +77,13 @@ export default function SettlementView({
             Battle Complete
           </div>
           <div className="mt-1 flex items-center justify-center gap-2">
-            <span className="text-2xl">{winnerCfg.emoji}</span>
+            <AgentPortrait
+              image={winnerCfg.image}
+              emoji={winnerCfg.emoji}
+              alt={winner.winnerName}
+              size="w-8 h-8"
+              className="text-2xl"
+            />
             <span className="font-cinzel text-xl font-black tracking-wider text-gold">
               {winner.winnerName}
             </span>
@@ -151,7 +158,15 @@ export default function SettlementView({
                   }`}
                 >
                   <div className="flex items-center gap-2">
-                    {cfg && <span>{cfg.emoji}</span>}
+                    {cfg && (
+                      <AgentPortrait
+                        image={cfg.image}
+                        emoji={cfg.emoji}
+                        alt={bet.agentName}
+                        size="w-5 h-5"
+                        className="text-sm"
+                      />
+                    )}
                     <div>
                       <span className="font-bold text-white">
                         {bet.agentName}

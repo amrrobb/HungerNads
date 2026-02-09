@@ -3,6 +3,7 @@
 import { useMemo, useRef, useEffect } from "react";
 import type { AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 import type { BattleEvent, SponsorBoostEvent } from "@/lib/websocket";
 
 // ---------------------------------------------------------------------------
@@ -314,8 +315,14 @@ export default function SponsorFeed({ events, agentMeta }: SponsorFeedProps) {
                     <span
                       className={`font-bold ${agentCfg?.color ?? "text-white"}`}
                     >
-                      {agentCfg?.emoji && (
-                        <span className="mr-0.5">{agentCfg.emoji}</span>
+                      {agentCfg && (
+                        <AgentPortrait
+                          image={agentCfg.image}
+                          emoji={agentCfg.emoji}
+                          alt={entry.agentName}
+                          size="w-4 h-4"
+                          className="mr-0.5 inline-block text-xs"
+                        />
                       )}
                       {entry.agentName}
                     </span>

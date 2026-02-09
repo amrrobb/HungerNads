@@ -1,6 +1,7 @@
 "use client";
 
 import { CLASS_CONFIG, type BattleAgent } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 
 interface StreamAgentBarProps {
   agents: BattleAgent[];
@@ -41,7 +42,13 @@ export default function StreamAgentBar({ agents }: StreamAgentBarProps) {
               }`}
             >
               {/* Class icon */}
-              <span className="text-lg">{cfg.emoji}</span>
+              <AgentPortrait
+                image={cfg.image}
+                emoji={cfg.emoji}
+                alt={agent.name}
+                size="w-6 h-6"
+                className="text-lg"
+              />
 
               {/* Name + HP */}
               <div className="flex-1 min-w-0">

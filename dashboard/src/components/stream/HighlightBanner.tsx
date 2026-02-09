@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 import type { HighlightEvent } from "@/app/stream/[id]/StreamView";
 
 interface StreamHighlightBannerProps {
@@ -100,9 +101,13 @@ export default function StreamHighlightBanner({
 
           {/* Agent class badge */}
           {highlight.agentClass && (
-            <span className="text-2xl">
-              {CLASS_CONFIG[highlight.agentClass].emoji}
-            </span>
+            <AgentPortrait
+              image={CLASS_CONFIG[highlight.agentClass].image}
+              emoji={CLASS_CONFIG[highlight.agentClass].emoji}
+              alt={highlight.agentClass}
+              size="w-8 h-8"
+              className="text-2xl"
+            />
           )}
         </div>
 

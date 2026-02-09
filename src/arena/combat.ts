@@ -23,9 +23,10 @@
  * Bleed: every alive agent loses 2% HP per epoch (unchanged from v1).
  */
 
-import type { EpochActions, CombatStance, AgentClass, SkillName } from '../agents/schemas';
+import type { EpochActions, CombatStance, AgentClass, SkillName, HexCoord } from '../agents/schemas';
 import { BETRAYAL_DAMAGE_MULTIPLIER } from '../agents/schemas';
 import type { SponsorEffect } from '../betting/sponsorship';
+import { isAdjacent as hexIsAdjacent } from './hex-grid';
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -84,6 +85,8 @@ export interface CombatAgentState {
   activeSkill?: SkillName;
   /** Current ally ID for betrayal detection. Null if no alliance. */
   allyId?: string | null;
+  /** Agent's current hex position (for adjacency checks). */
+  position?: HexCoord | null;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -222,6 +225,16 @@ export function resolveCombat(
 
     const target = agents.get(targetId);
     if (!target || !target.isAlive) continue;
+
+    // Adjacency check: ATTACK and SABOTAGE can only target adjacent hexes
+    if (aggressor.position && target.position) {
+      if (!hexIsAdjacent(aggressor.position, target.position)) {
+        console.log(
+          `[Combat] ${aggressorId} cannot ${aggressorStance} ${targetId}: not adjacent`,
+        );
+        continue; // Skip this combat action — agents are out of range
+      }
+    }
 
     // Resolve stake from combat fields or legacy fields
     const rawStake = action.combatStake ?? action.attack?.stake ?? 0;

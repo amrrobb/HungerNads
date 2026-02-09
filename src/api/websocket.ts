@@ -23,6 +23,8 @@ import type { CombatResult } from '../arena/combat';
 import type { DeathEvent } from '../arena/death';
 import type { MarketData, AllianceEvent as AllianceEventData } from '../agents/schemas';
 import type { CurveEvent } from '../chain/nadfun';
+import type { TileType, ItemType } from '../arena/types/hex';
+import type { HexGridState } from '../arena/hex-grid';
 
 // ─── Event Types ──────────────────────────────────────────────────────────────
 
@@ -244,6 +246,90 @@ export interface SponsorBoostEvent {
   };
 }
 
+// ─── Grid / Item Events ───────────────────────────────────────────────────────
+
+/**
+ * Full grid state snapshot. Sent on initial WebSocket connect and after each
+ * epoch so spectators always have a consistent view of the 19-tile arena.
+ *
+ * tiles: flat array of all hex tiles with coords, type, occupant, and items.
+ * agentPositions: agentId -> { q, r } mapping for quick lookup.
+ */
+export interface GridStateEvent {
+  type: 'grid_state';
+  data: {
+    tiles: {
+      q: number;
+      r: number;
+      type: TileType;
+      occupantId: string | null;
+      items: { id: string; type: ItemType }[];
+    }[];
+    agentPositions: Record<string, { q: number; r: number }>;
+  };
+}
+
+/**
+ * Emitted when an agent moves to a new hex during the movement phase.
+ * Failed moves (collision, out-of-bounds) are also reported for spectator drama.
+ */
+export interface AgentMovedEvent {
+  type: 'agent_moved';
+  data: {
+    agentId: string;
+    agentName: string;
+    from: { q: number; r: number };
+    to: { q: number; r: number };
+    success: boolean;
+    reason?: string;
+  };
+}
+
+/**
+ * Emitted when new items spawn on the grid (after combat resolution).
+ * One event per spawned item.
+ */
+export interface ItemSpawnedEvent {
+  type: 'item_spawned';
+  data: {
+    itemId: string;
+    itemType: ItemType;
+    coord: { q: number; r: number };
+    epochNumber: number;
+    isCornucopia: boolean;
+  };
+}
+
+/**
+ * Emitted when an agent picks up an item from their current tile.
+ */
+export interface ItemPickedUpEvent {
+  type: 'item_picked_up';
+  data: {
+    agentId: string;
+    agentName: string;
+    itemId: string;
+    itemType: ItemType;
+    coord: { q: number; r: number };
+    effect: string;
+    hpChange: number;
+  };
+}
+
+/**
+ * Emitted when an agent triggers a TRAP on a hex tile.
+ */
+export interface TrapTriggeredEvent {
+  type: 'trap_triggered';
+  data: {
+    agentId: string;
+    agentName: string;
+    coord: { q: number; r: number };
+    damage: number;
+    itemId: string;
+  };
+}
+
 /** Discriminated union of all events streamed to spectators. */
 export type BattleEvent =
   | EpochStartEvent
@@ -261,7 +347,12 @@ export type BattleEvent =
   | TimeoutWinEvent
   | BettingPhaseChangeEvent
   | SponsorBoostEvent
-  | AllianceEvent;
+  | AllianceEvent
+  | GridStateEvent
+  | AgentMovedEvent
+  | ItemSpawnedEvent
+  | ItemPickedUpEvent
+  | TrapTriggeredEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 
@@ -443,6 +534,73 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     }
   }
 
+  // ── 1.6. Movement events (agent repositioning) ─────────────────────
+  if (result.moveResults) {
+    // Build a name lookup from agentStates (always has id + name)
+    const moveNameById = new Map<string, string>();
+    for (const agent of result.agentStates) {
+      moveNameById.set(agent.id, agent.name);
+    }
+
+    for (const move of result.moveResults) {
+      events.push({
+        type: 'agent_moved',
+        data: {
+          agentId: move.agentId,
+          agentName: moveNameById.get(move.agentId) ?? move.agentId,
+          from: { q: move.from.q, r: move.from.r },
+          to: { q: move.to.q, r: move.to.r },
+          success: move.success,
+          reason: move.reason,
+        },
+      });
+    }
+  }
+
+  // ── 1.7. Item pickups (after movement) ────────────────────────────
+  if (result.itemPickups) {
+    const pickupNameById = new Map<string, string>();
+    for (const agent of result.agentStates) {
+      pickupNameById.set(agent.id, agent.name);
+    }
+
+    for (const pickup of result.itemPickups) {
+      events.push({
+        type: 'item_picked_up',
+        data: {
+          agentId: pickup.agentId,
+          agentName: pickupNameById.get(pickup.agentId) ?? pickup.agentId,
+          itemId: pickup.item.id,
+          itemType: pickup.item.type,
+          coord: { q: pickup.item.coord.q, r: pickup.item.coord.r },
+          effect: pickup.effect,
+          hpChange: pickup.hpChange,
+        },
+      });
+    }
+  }
+
+  // ── 1.8. Trap triggers (after movement) ───────────────────────────
+  if (result.trapTriggers) {
+    const trapNameById = new Map<string, string>();
+    for (const agent of result.agentStates) {
+      trapNameById.set(agent.id, agent.name);
+    }
+
+    for (const trap of result.trapTriggers) {
+      events.push({
+        type: 'trap_triggered',
+        data: {
+          agentId: trap.agentId,
+          agentName: trapNameById.get(trap.agentId) ?? trap.agentId,
+          coord: { q: trap.item.coord.q, r: trap.item.coord.r },
+          damage: trap.damage,
+          itemId: trap.item.id,
+        },
+      });
+    }
+  }
+
   // ── 2. Agent actions ──────────────────────────────────────────────
   // Build a name lookup from agentStates (always has id + name)
   const nameById = new Map<string, string>();
@@ -500,6 +658,22 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     });
   }
 
+  // ── 4.5. Item spawns (after combat, items appear on the grid) ──────
+  if (result.spawnedItems) {
+    for (const item of result.spawnedItems) {
+      events.push({
+        type: 'item_spawned',
+        data: {
+          itemId: item.id,
+          itemType: item.type,
+          coord: { q: item.coord.q, r: item.coord.r },
+          epochNumber: item.epochNumber,
+          isCornucopia: item.isCornucopia,
+        },
+      });
+    }
+  }
+
   // ── 5. Agent deaths ───────────────────────────────────────────────
   for (const death of result.deaths) {
     events.push({
@@ -530,4 +704,40 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
   }
 
   return events;
+}
+
+// ─── Grid State Helper ────────────────────────────────────────────────────────
+
+/**
+ * Build a GridStateEvent from the current HexGridState.
+ *
+ * Used by ArenaDO to:
+ *   1. Send an initial grid snapshot on WebSocket connect.
+ *   2. Include a grid_state event at the end of each epoch's event sequence.
+ *
+ * The grid's tiles Map is flattened to a serializable array with occupant and
+ * item info for each tile.
+ */
+export function gridStateToEvent(grid: HexGridState): GridStateEvent {
+  const tiles: GridStateEvent['data']['tiles'] = [];
+  const agentPositions: Record<string, { q: number; r: number }> = {};
+
+  for (const tile of grid.tiles.values()) {
+    tiles.push({
+      q: tile.coord.q,
+      r: tile.coord.r,
+      type: tile.type,
+      occupantId: tile.occupantId,
+      items: tile.items.map(item => ({ id: item.id, type: item.type })),
+    });
+
+    if (tile.occupantId) {
+      agentPositions[tile.occupantId] = { q: tile.coord.q, r: tile.coord.r };
+    }
+  }
+
+  return {
+    type: 'grid_state',
+    data: { tiles, agentPositions },
+  };
 }

@@ -30,6 +30,10 @@ import {
 } from '../src/learning/lessons';
 import type { DeathCause } from '../src/arena/death';
 import type { ArenaAgentState } from '../src/agents/schemas';
+import type { HexGridState, HexTile, HexCoord } from '../src/arena/hex-grid';
+import { hexKey, getDistance } from '../src/arena/hex-grid';
+import type { ItemPickupResult, TrapTriggerResult } from '../src/arena/items';
+import type { MoveResult } from '../src/arena/grid';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ANSI Color Utilities (no dependencies needed)
@@ -112,6 +116,264 @@ function hpBar(hp: number, maxHp: number, width: number = 20): string {
   const bar = c(barColor, '\u2588'.repeat(filled)) + c('gray', '\u2591'.repeat(empty));
   const pct = Math.round(ratio * 100).toString().padStart(3);
   return `[${bar}] ${c(barColor, `${pct}%`)} ${c('gray', `(${hp}/${maxHp})`)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Item Type Styling
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const ITEM_STYLE: Record<string, { icon: string; char: string; color: keyof typeof C }> = {
+  RATION: { icon: '\uD83C\uDF56', char: 'R', color: 'green' },
+  WEAPON: { icon: '\uD83D\uDDE1\uFE0F', char: 'W', color: 'red' },
+  SHIELD: { icon: '\uD83D\uDEE1\uFE0F', char: 'S', color: 'cyan' },
+  TRAP:   { icon: '\uD83D\uDCA3', char: 'T', color: 'brightRed' },
+  ORACLE: { icon: '\uD83D\uDD2E', char: 'O', color: 'magenta' },
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASCII Hex Grid Renderer (19-tile arena)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Agent class abbreviations for the grid display.
+ * Single char for compact hex cells.
+ */
+const CLASS_CHAR: Record<string, string> = {
+  WARRIOR: 'W',
+  TRADER: 'T',
+  SURVIVOR: 'S',
+  PARASITE: 'P',
+  GAMBLER: 'G',
+};
+
+/**
+ * Render the 19-tile hex grid as ASCII art.
+ *
+ * Layout (flat-top hexes, r rows top-to-bottom):
+ *
+ *          [   ] [   ] [   ]           r = -2 (3 tiles)
+ *        [   ] [   ] [   ] [   ]       r = -1 (4 tiles)
+ *      [   ] [   ] [   ] [   ] [   ]   r =  0 (5 tiles)
+ *        [   ] [   ] [   ] [   ]       r =  1 (4 tiles)
+ *          [   ] [   ] [   ]           r =  2 (3 tiles)
+ *
+ * Each cell shows agent (colored class char) or item type, or '.' for empty.
+ */
+function renderHexGrid(
+  grid: HexGridState,
+  agentLookup: Map<string, { name: string; class: string }>,
+  indent: string = '    ',
+): string {
+  // Grid rows from top to bottom (r = -2 to 2)
+  const rows: { r: number; qMin: number; qMax: number }[] = [
+    { r: -2, qMin: 0, qMax: 2 },
+    { r: -1, qMin: -1, qMax: 2 },
+    { r: 0,  qMin: -2, qMax: 2 },
+    { r: 1,  qMin: -2, qMax: 1 },
+    { r: 2,  qMin: -2, qMax: 0 },
+  ];
+
+  const CELL_WIDTH = 5; // " [x] " total per cell
+  const MAX_COLS = 5;   // widest row (r=0) has 5 cells
+
+  const lines: string[] = [];
+
+  for (const row of rows) {
+    const numCells = row.qMax - row.qMin + 1;
+    const leftPad = Math.floor((MAX_COLS - numCells) * (CELL_WIDTH / 2));
+    let line = indent + ' '.repeat(leftPad);
+
+    for (let q = row.qMin; q <= row.qMax; q++) {
+      const key = `${q},${row.r}`;
+      const tile = grid.tiles.get(key);
+
+      if (!tile) {
+        line += '     '; // shouldn't happen for valid grid
+        continue;
+      }
+
+      const cellContent = formatHexCell(tile, agentLookup);
+      line += cellContent;
+    }
+
+    lines.push(line);
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * Format a single hex cell for the ASCII grid.
+ * Priority: agent > items > tile type indicator.
+ */
+function formatHexCell(
+  tile: HexTile,
+  agentLookup: Map<string, { name: string; class: string }>,
+): string {
+  // Agent on tile?
+  if (tile.occupantId) {
+    const info = agentLookup.get(tile.occupantId);
+    if (info) {
+      const style = CLASS_STYLE[info.class] ?? { icon: '?', color: 'white' as const };
+      const ch = CLASS_CHAR[info.class] ?? '?';
+      const nameInitial = info.name.charAt(0).toUpperCase();
+      return ` [${c(style.color, ch + nameInitial)}] `;
+    }
+    return ' [??] ';
+  }
+
+  // Items on tile?
+  if (tile.items.length > 0) {
+    const item = tile.items[0]; // Show first item
+    const itemStyle = ITEM_STYLE[item.type] ?? { char: '?', color: 'white' as const };
+    const extra = tile.items.length > 1 ? '+' : ' ';
+    return ` [${c(itemStyle.color, itemStyle.char + extra)}] `;
+  }
+
+  // Empty tile - show type indicator
+  if (tile.type === 'CORNUCOPIA') {
+    return ` [${c('yellow', '\u00B7\u00B7')}] `; // center zone
+  }
+
+  return ` [${c('gray', '\u00B7\u00B7')}] `; // edge zone
+}
+
+/**
+ * Print the hex grid with a header and legend.
+ */
+function printHexGrid(
+  grid: HexGridState,
+  agentLookup: Map<string, { name: string; class: string }>,
+  header?: string,
+): void {
+  if (header) {
+    console.log('');
+    console.log(c('bold', `  ${header}`));
+  }
+
+  console.log('');
+  console.log(renderHexGrid(grid, agentLookup));
+  console.log('');
+
+  // Compact legend
+  const agentLegend = Object.entries(CLASS_STYLE)
+    .map(([cls, style]) => `${c(style.color, CLASS_CHAR[cls] ?? '?')}=${cls}`)
+    .join(' ');
+  const itemLegend = Object.entries(ITEM_STYLE)
+    .map(([type, style]) => `${c(style.color, style.char)}=${type}`)
+    .join(' ');
+
+  console.log(`    ${c('gray', 'Agents:')} ${agentLegend}`);
+  console.log(`    ${c('gray', 'Items:')}  ${itemLegend}`);
+  console.log(`    ${c('gray', 'Zones:')}  ${c('yellow', '\u00B7\u00B7')}=cornucopia  ${c('gray', '\u00B7\u00B7')}=edge`);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Movement / Item Phase Display
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function printMovementPhase(
+  result: EpochResult,
+  agentLookup: Map<string, { name: string; class: string }>,
+): void {
+  if (!result.moveResults || result.moveResults.length === 0) return;
+
+  console.log('');
+  console.log(c('bold', '  MOVEMENT:'));
+
+  for (const mv of result.moveResults) {
+    const info = agentLookup.get(mv.agentId);
+    if (!info) continue;
+
+    const tag = agentTag(info.name, info.class);
+    if (mv.success) {
+      console.log(
+        `    ${tag} ${c('brightCyan', '\u2192')} moved (${mv.from.q},${mv.from.r}) ${c('brightCyan', '\u2192')} (${mv.to.q},${mv.to.r})`,
+      );
+    } else {
+      console.log(
+        `    ${tag} ${c('gray', '\u2717')} stay at (${mv.from.q},${mv.from.r}) ${c('gray', `[${mv.reason}]`)}`,
+      );
+    }
+  }
+}
+
+function printItemPickupPhase(
+  result: EpochResult,
+  agentLookup: Map<string, { name: string; class: string }>,
+): void {
+  const hasPickups = result.itemPickups && result.itemPickups.length > 0;
+  const hasTraps = result.trapTriggers && result.trapTriggers.length > 0;
+  if (!hasPickups && !hasTraps) return;
+
+  console.log('');
+  console.log(c('bold', '  ITEMS:'));
+
+  // Traps first (dramatic)
+  if (hasTraps) {
+    for (const trap of result.trapTriggers) {
+      const info = agentLookup.get(trap.agentId);
+      if (!info) continue;
+      const tag = agentTag(info.name, info.class);
+      console.log(
+        `    ${tag} ${c('brightRed', '\uD83D\uDCA5 TRAP!')} ${c('brightRed', `-${trap.damage} HP`)} at (${trap.item.coord.q},${trap.item.coord.r})`,
+      );
+    }
+  }
+
+  // Pickups
+  if (hasPickups) {
+    for (const pickup of result.itemPickups) {
+      const info = agentLookup.get(pickup.agentId);
+      if (!info) continue;
+      const tag = agentTag(info.name, info.class);
+      const itemStyle = ITEM_STYLE[pickup.item.type] ?? { icon: '?', char: '?', color: 'white' as const };
+      const hpStr = pickup.hpChange > 0
+        ? c('brightGreen', `+${pickup.hpChange} HP`)
+        : pickup.hpChange < 0
+          ? c('brightRed', `${pickup.hpChange} HP`)
+          : c('gray', 'buff applied');
+      console.log(
+        `    ${tag} ${c(itemStyle.color, `picked up ${pickup.item.type}`)} ${hpStr}`,
+      );
+      if (pickup.buff) {
+        console.log(
+          `           ${c('cyan', `\u2192 ${pickup.effect}`)}`,
+        );
+      }
+    }
+  }
+}
+
+function printItemSpawns(result: EpochResult): void {
+  if (!result.itemsSpawned || result.itemsSpawned === 0) return;
+  console.log('');
+  console.log(
+    `  ${c('yellow', `\u2728 ${result.itemsSpawned} new item${result.itemsSpawned > 1 ? 's' : ''} spawned on the field`)}`,
+  );
+}
+
+function printBuffStatus(
+  result: EpochResult,
+  agentLookup: Map<string, { name: string; class: string }>,
+): void {
+  if (!result.buffTicks || result.buffTicks.length === 0) return;
+
+  const expired = result.buffTicks.filter(bt => bt.expired.length > 0);
+  if (expired.length === 0) return;
+
+  console.log('');
+  console.log(c('bold', '  BUFF EXPIRATIONS:'));
+  for (const bt of expired) {
+    const info = agentLookup.get(bt.agentId);
+    if (!info) continue;
+    const tag = agentTag(info.name, info.class);
+    for (const buff of bt.expired) {
+      console.log(
+        `    ${tag} ${c('gray', `${buff.type} buff expired`)}`,
+      );
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -409,7 +671,10 @@ function printHPSummary(result: EpochResult): void {
   for (const agent of sorted) {
     const tag = agentTag(agent.name, agent.class);
     if (agent.isAlive) {
-      console.log(`    ${tag} ${hpBar(agent.hp, 1000)}`);
+      const posStr = agent.position
+        ? c('gray', ` @ (${agent.position.q},${agent.position.r})`)
+        : '';
+      console.log(`    ${tag} ${hpBar(agent.hp, 1000)}${posStr}`);
     } else {
       console.log(`    ${tag} ${c('gray', '\uD83D\uDC80 ELIMINATED')}`);
     }
@@ -611,21 +876,36 @@ async function runBattle(): Promise<void> {
   const agents = arena.getAllAgents();
   for (const agent of agents) {
     const style = CLASS_STYLE[agent.agentClass] ?? { icon: '?', color: 'white' as const };
+    const posStr = agent.position
+      ? c('gray', `@ (${agent.position.q},${agent.position.r})`)
+      : '';
     console.log(
       `  ${style.icon} ${c('bold', c(style.color, agent.name.padEnd(16)))} ` +
       `${c('white', agent.agentClass.padEnd(10))} ` +
-      `${c('gray', `HP: ${agent.hp}/${agent.maxHp}`)}`,
+      `${c('gray', `HP: ${agent.hp}/${agent.maxHp}`)} ${posStr}`,
     );
   }
-
-  console.log('');
-  console.log(c('gray', '  The crowd roars. The battle begins.'));
 
   // ── Build agent lookup ───────────────────────────────────────────────────
   const agentLookup = new Map<string, { name: string; class: string }>();
   for (const agent of agents) {
     agentLookup.set(agent.id, { name: agent.name, class: agent.agentClass });
   }
+
+  // ── Display initial arena grid ────────────────────────────────────────────
+  let cornucopiaItemCount = 0;
+  Array.from(arena.grid.tiles.values()).forEach(tile => {
+    cornucopiaItemCount += tile.items.length;
+  });
+  printHexGrid(
+    arena.grid,
+    agentLookup,
+    `ARENA MAP (19-tile hex grid \u2022 ${cornucopiaItemCount} cornucopia items spawned)`,
+  );
+
+  console.log('');
+  console.log(c('gray', '  Agents spread across the outer ring. Cornucopia loot glitters in the center.'));
+  console.log(c('gray', '  The crowd roars. The battle begins.'));
 
   // ── Price feed (simulated for mock mode, real for LLM mode) ──────────────
   // Use simulated prices always for the CLI - real Pyth prices are slow and
@@ -685,12 +965,26 @@ async function runBattle(): Promise<void> {
     // ── Print epoch play-by-play ──────────────────────────────────────────
     printEpochHeader(result.epochNumber, maxEpochs);
     printMarketData(result.marketData);
+
+    // Movement phase (new: hex grid movement)
+    printMovementPhase(result, agentLookup);
+
+    // Item events (pickups, traps)
+    printItemPickupPhase(result, agentLookup);
+
     printAgentDecisions(result, agentLookup);
     printSecretaryCorrections(result, agentLookup);
     printPredictionResults(result, agentLookup);
     printCombatResults(result, agentLookup);
     printAllianceEvents(result);
+
+    // Item spawns (after combat)
+    printItemSpawns(result);
+
     printBleed(result);
+
+    // Buff expirations
+    printBuffStatus(result, agentLookup);
 
     // Print deaths from the engine's death checker
     printDeaths(result);
@@ -726,6 +1020,9 @@ async function runBattle(): Promise<void> {
     }
 
     printHPSummary(result);
+
+    // Render the hex grid after each epoch (shows current positions + items)
+    printHexGrid(arena.grid, agentLookup);
 
     // Suppress again for next epoch
     if (!useLLM) {

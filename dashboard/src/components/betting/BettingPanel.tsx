@@ -4,6 +4,7 @@ import { useState, useMemo, useRef, useEffect } from "react";
 import { useAccount } from "wagmi";
 import type { AgentState, AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import AgentPortrait from "@/components/battle/AgentPortrait";
 import useFetch from "@/hooks/useFetch";
 import OddsIndicator from "./OddsIndicator";
 import OddsSparkline from "./OddsSparkline";
@@ -238,7 +239,13 @@ export default function BettingPanel({
                   }`}
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-base flex-shrink-0">{cfg.emoji}</span>
+                    <AgentPortrait
+                      image={cfg.image}
+                      emoji={cfg.emoji}
+                      alt={agent.name}
+                      size="w-6 h-6"
+                      className="text-base flex-shrink-0"
+                    />
                     <span className="font-bold text-white truncate">
                       {agent.name}
                     </span>
@@ -325,7 +332,13 @@ export default function BettingPanel({
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-1.5">
                         {cfg && (
-                          <span className="text-sm">{cfg.emoji}</span>
+                          <AgentPortrait
+                            image={cfg.image}
+                            emoji={cfg.emoji}
+                            alt={bet.agentName}
+                            size="w-5 h-5"
+                            className="text-sm"
+                          />
                         )}
                         <span className="font-bold text-white">
                           {bet.agentName}

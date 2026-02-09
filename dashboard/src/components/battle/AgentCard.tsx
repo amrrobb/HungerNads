@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 import { CLASS_CONFIG, type BattleAgent } from "./mock-data";
+import AgentPortrait from "./AgentPortrait";
 
 interface AgentCardProps {
   agent: BattleAgent;
@@ -169,7 +170,13 @@ export default function AgentCard({ agent, highlighted }: AgentCardProps) {
       {/* Header: emoji + name + class badge */}
       <div className="mb-3 flex items-start justify-between">
         <div className="flex items-center gap-2">
-          <span className="text-2xl">{cfg.emoji}</span>
+          <AgentPortrait
+            image={cfg.image}
+            emoji={cfg.emoji}
+            alt={agent.name}
+            size="w-8 h-8"
+            className="text-2xl"
+          />
           <div>
             <h3
               className={`text-sm font-bold tracking-wider ${

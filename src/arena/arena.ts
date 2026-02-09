@@ -19,6 +19,23 @@ import { GamblerAgent } from '../agents/gambler';
 import type { AgentClass, ArenaAgentState, HexCoord } from '../agents/schemas';
 import { pickAgentName } from '../agents/names';
 import { assignInitialPositions, getAdjacentAgents, buildSpatialContext } from './grid';
+import {
+  createGrid,
+  placeAgent,
+  removeAgent as removeAgentFromGrid,
+  getEmptyTiles,
+  getTilesByType,
+  serializeGrid,
+  hexKey,
+} from './hex-grid';
+import type { HexGridState } from './hex-grid';
+import {
+  spawnCornucopiaItems,
+  addItemsToGrid,
+  tickItemBuffs,
+  addBuff,
+} from './items';
+import type { ItemBuff, BuffTickResult } from './items';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -36,6 +53,8 @@ export interface BattleState {
   endedAt: string | null;
   winnerId: string | null;
   winnerName: string | null;
+  /** Serialized hex grid state (19-tile arena). */
+  grid?: ReturnType<typeof serializeGrid>;
 }
 
 /** Record of an eliminated agent, produced when eliminateAgent() is called. */
@@ -124,6 +143,11 @@ export class ArenaManager {
   public endedAt: Date | null;
   public readonly config: BattleConfig;
 
+  /** 19-tile hex grid state (tiles, occupants, items). */
+  public grid: HexGridState;
+  /** Active item buffs per agent (agentId -> ItemBuff[]). */
+  public agentBuffs: Map<string, ItemBuff[]>;
+
   private eliminations: EliminationRecord[];
 
   constructor(battleId: string, config: Partial<BattleConfig> = {}) {
@@ -135,6 +159,8 @@ export class ArenaManager {
     this.startedAt = null;
     this.endedAt = null;
     this.eliminations = [];
+    this.grid = createGrid(); // 19-tile hex grid (radius 2)
+    this.agentBuffs = new Map();
   }
 
   // -------------------------------------------------------------------------
@@ -176,14 +202,29 @@ export class ArenaManager {
       agentIds.push(id);
     }
 
-    // Assign initial hex positions across the 7-hex arena
-    const positions = assignInitialPositions(agentIds);
-    for (const [agentId, pos] of positions) {
+    // Place agents on EDGE tiles of the 19-tile hex grid (spread out, away from cornucopia)
+    const edgeTiles = getTilesByType('EDGE', this.grid);
+    // Shuffle edge tiles for random placement
+    const shuffled = [...edgeTiles];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    for (let i = 0; i < agentIds.length; i++) {
+      const tile = shuffled[i % shuffled.length];
+      const pos = tile.coord;
+      const agentId = agentIds[i];
+      this.grid = placeAgent(agentId, pos, this.grid);
       const agent = this.agents.get(agentId);
       if (agent) {
-        agent.position = pos;
+        agent.position = { q: pos.q, r: pos.r };
       }
     }
+
+    // Also assign positions via the old 7-hex system for backward compat
+    const positions = assignInitialPositions(agentIds);
+    // (Positions from the 19-tile grid take precedence; old positions are overwritten above)
   }
 
   // -------------------------------------------------------------------------
@@ -206,7 +247,7 @@ export class ArenaManager {
 
   /**
    * Start the battle. Transition from BETTING_OPEN -> ACTIVE.
-   * Records start time.
+   * Records start time and spawns cornucopia items on center tiles.
    */
   startBattle(): void {
     if (this.status !== 'BETTING_OPEN') {
@@ -214,6 +255,10 @@ export class ArenaManager {
     }
     this.status = 'ACTIVE';
     this.startedAt = new Date();
+
+    // Spawn cornucopia items on the 7 center tiles (CORNUCOPIA zone)
+    const cornucopiaItems = spawnCornucopiaItems(this.grid);
+    this.grid = addItemsToGrid(cornucopiaItems, this.grid);
   }
 
   /**
@@ -229,6 +274,10 @@ export class ArenaManager {
     }
     this.status = 'ACTIVE';
     this.startedAt = new Date();
+
+    // Spawn cornucopia items on center tiles
+    const cornucopiaItems = spawnCornucopiaItems(this.grid);
+    this.grid = addItemsToGrid(cornucopiaItems, this.grid);
   }
 
   // -------------------------------------------------------------------------
@@ -323,6 +372,11 @@ export class ArenaManager {
     if (agent.alive()) {
       agent.hp = 0;
       agent.isAlive = false;
+    }
+
+    // Remove agent from the hex grid
+    if (agent.position) {
+      this.grid = removeAgentFromGrid(agent.position, this.grid);
     }
 
     // Only record the elimination once
@@ -435,7 +489,23 @@ export class ArenaManager {
       endedAt: this.endedAt?.toISOString() ?? null,
       winnerId: winner?.id ?? null,
       winnerName: winner?.name ?? null,
+      grid: serializeGrid(this.grid),
     };
+  }
+
+  /** Update the hex grid state (called by epoch processor after movement/items). */
+  updateGrid(grid: HexGridState): void {
+    this.grid = grid;
+  }
+
+  /** Tick all active item buffs. Called at the end of each epoch. */
+  tickBuffs(): BuffTickResult[] {
+    return tickItemBuffs(this.agentBuffs);
+  }
+
+  /** Add a buff to an agent. */
+  addAgentBuff(agentId: string, buff: ItemBuff): void {
+    addBuff(agentId, buff, this.agentBuffs);
   }
 
   /** Get elimination history. */

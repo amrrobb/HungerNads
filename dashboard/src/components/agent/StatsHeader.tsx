@@ -2,21 +2,23 @@ import { AgentClass } from "@/types";
 
 const CLASS_CONFIG: Record<
   AgentClass,
-  { icon: string; badge: string; label: string }
+  { icon: string; image: string; badge: string; label: string }
 > = {
-  WARRIOR: { icon: "\u2694\uFE0F", badge: "badge-warrior", label: "Warrior" },
-  TRADER: { icon: "\uD83D\uDCCA", badge: "badge-trader", label: "Trader" },
+  WARRIOR: { icon: "\u2694\uFE0F", image: "/agents/agent.warrior.png", badge: "badge-warrior", label: "Warrior" },
+  TRADER: { icon: "\uD83D\uDCCA", image: "/agents/agent.trader.png", badge: "badge-trader", label: "Trader" },
   SURVIVOR: {
     icon: "\uD83D\uDEE1\uFE0F",
+    image: "/agents/agent.survivor.png",
     badge: "badge-survivor",
     label: "Survivor",
   },
   PARASITE: {
     icon: "\uD83E\uDDA0",
+    image: "/agents/agent.parasite.png",
     badge: "badge-parasite",
     label: "Parasite",
   },
-  GAMBLER: { icon: "\uD83C\uDFB2", badge: "badge-gambler", label: "Gambler" },
+  GAMBLER: { icon: "\uD83C\uDFB2", image: "/agents/agent.gambler.png", badge: "badge-gambler", label: "Gambler" },
 };
 
 interface StatsHeaderProps {
@@ -48,8 +50,16 @@ export function StatsHeader({
     <div className="card">
       {/* Name and class */}
       <div className="mb-6 flex items-center gap-4">
-        <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-colosseum-bg text-3xl">
-          {config.icon}
+        <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-lg bg-colosseum-bg text-3xl">
+          <img
+            src={config.image}
+            alt={`${agentClass} portrait`}
+            className="h-full w-full object-cover"
+            onError={(e) => {
+              e.currentTarget.style.display = "none";
+              e.currentTarget.parentElement!.textContent = config.icon;
+            }}
+          />
         </div>
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-gray-100">

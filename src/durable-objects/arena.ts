@@ -22,6 +22,7 @@ import {
   broadcastEvents,
   epochToEvents,
   curveEventToBattleEvent,
+  gridStateToEvent,
 } from '../api/websocket';
 import { createNadFunClient, type NadFunClient, type CurveStream } from '../chain/nadfun';
 import type { Address } from 'viem';
@@ -414,7 +415,17 @@ export class ArenaDO implements DurableObject {
     await this.state.storage.put('previousMarketData', result.marketData);
 
     // ── Broadcast rich events to spectators ──────────────────────
-    this.broadcastEpochResult(result);
+    this.broadcastEpochResult(result, arena);
+
+    // ── Persist grid state for new WebSocket connections ─────────
+    // Store the serialized grid snapshot so that spectators connecting
+    // between epochs receive the latest tile/item/position state.
+    try {
+      const gridSnapshot = gridStateToEvent(arena.grid);
+      await this.state.storage.put('gridSnapshot', gridSnapshot);
+    } catch (err) {
+      console.error('[ArenaDO] Failed to persist grid snapshot:', err);
+    }
 
     // ── Betting phase transition: OPEN -> LOCKED ──────────────────
     // After N epochs, lock betting so no new bets can be placed.
@@ -681,13 +692,24 @@ export class ArenaDO implements DurableObject {
    *
    * Converts the result to ordered events and streams them to all
    * connected spectators:
-   *   epoch_start -> agent_action (x N) -> prediction_result (x N)
-   *   -> combat_result (x M) -> agent_death (x D) -> epoch_end
-   *   -> battle_end (if applicable)
+   *   epoch_start -> agent_moved (x N) -> item_picked_up (x N)
+   *   -> trap_triggered (x N) -> agent_action (x N) -> prediction_result (x N)
+   *   -> combat_result (x M) -> item_spawned (x N) -> agent_death (x D)
+   *   -> epoch_end -> grid_state -> battle_end (if applicable)
+   *
+   * Also sends a grid_state snapshot after epoch_end so spectators
+   * always have the latest tile/item/position state.
    */
-  broadcastEpochResult(epochResult: EpochResult): void {
+  broadcastEpochResult(epochResult: EpochResult, arena?: ArenaManager): void {
     const sockets = this.state.getWebSockets();
     const events = epochToEvents(epochResult);
+
+    // Append a grid_state snapshot after the epoch events so the client
+    // has a consistent view of tile positions and items.
+    if (arena) {
+      events.push(gridStateToEvent(arena.grid));
+    }
+
     broadcastEvents(sockets, events);
   }
 
@@ -832,6 +854,12 @@ export class ArenaDO implements DurableObject {
           },
         };
         server.send(JSON.stringify(phaseEvent));
+
+        // Send latest grid state (tile positions, items, agent positions)
+        const gridSnapshot = await this.state.storage.get<BattleEvent>('gridSnapshot');
+        if (gridSnapshot) {
+          server.send(JSON.stringify(gridSnapshot));
+        }
       }
 
       return new Response(null, { status: 101, webSocket: client });

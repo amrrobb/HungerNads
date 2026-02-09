@@ -245,12 +245,101 @@ export const MOCK_PRICES: MarketPrice[] = [
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Mock grid state -- agent positions on 19-tile hex grid
+// ---------------------------------------------------------------------------
+
+/** Mock agent positions on the 19-tile grid (axial coordinates). */
+export const MOCK_AGENT_POSITIONS: Map<string, { q: number; r: number }> = new Map([
+  ["agent-1", { q: 0, r: 0 }],    // BLOODFANG at CENTER (cornucopia)
+  ["agent-2", { q: 1, r: -1 }],   // ALPHABOT at NE (cornucopia ring 1)
+  ["agent-3", { q: -1, r: 1 }],   // IRONSHELL at SW (cornucopia ring 1)
+  ["agent-4", { q: 1, r: 0 }],    // COPYCAT at E (cornucopia ring 1) -- dead
+  ["agent-5", { q: -1, r: -1 }],  // MADLAD at outer ring (edge)
+]);
+
+/** Item type enum for mock items */
+export type MockItemType = "RATION" | "WEAPON" | "SHIELD" | "TRAP" | "ORACLE";
+
+/** Mock tile items scattered across the arena */
+export const MOCK_TILE_ITEMS: Map<string, Array<{ id: string; type: MockItemType }>> = new Map([
+  ["0,-1", [{ id: "item-1", type: "RATION" }]],          // N tile: health ration
+  ["-1,0", [{ id: "item-2", type: "WEAPON" }]],          // W tile: weapon
+  ["0,1", [{ id: "item-3", type: "SHIELD" }]],           // S tile: shield
+  ["2,-1", [{ id: "item-4", type: "TRAP" }]],            // outer tile: hidden trap
+  ["-2,2", [{ id: "item-5", type: "ORACLE" }]],          // outer tile: oracle
+  ["0,-2", [{ id: "item-6", type: "RATION" }, { id: "item-7", type: "WEAPON" }]],  // outer tile: two items
+]);
+
+// ---------------------------------------------------------------------------
+// Mock grid state event -- simulates the grid_state WS event for local dev.
+// Includes all 19 tiles with types, occupants, and items.
+// ---------------------------------------------------------------------------
+
+/** Tile type classification. */
+type MockTileType = "NORMAL" | "CORNUCOPIA" | "EDGE";
+
+function classifyMockTile(q: number, r: number): MockTileType {
+  const s = -q - r;
+  const dist = Math.max(Math.abs(q), Math.abs(r), Math.abs(s));
+  if (dist <= 1) return "CORNUCOPIA";
+  return "EDGE";
+}
+
+/** Generate a mock grid_state data payload matching the GridStateEvent shape. */
+function generateMockGridState() {
+  const RADIUS = 2;
+  const tiles: {
+    q: number;
+    r: number;
+    type: MockTileType;
+    occupantId: string | null;
+    items: { id: string; type: MockItemType }[];
+  }[] = [];
+
+  // Build occupant lookup from MOCK_AGENT_POSITIONS
+  const occupantByKey = new Map<string, string>();
+  for (const [agentId, coord] of MOCK_AGENT_POSITIONS) {
+    occupantByKey.set(`${coord.q},${coord.r}`, agentId);
+  }
+
+  for (let q = -RADIUS; q <= RADIUS; q++) {
+    for (let r = -RADIUS; r <= RADIUS; r++) {
+      const s = -q - r;
+      if (Math.abs(s) > RADIUS) continue;
+
+      const key = `${q},${r}`;
+      const tileItems = MOCK_TILE_ITEMS.get(key) ?? [];
+      tiles.push({
+        q,
+        r,
+        type: classifyMockTile(q, r),
+        occupantId: occupantByKey.get(key) ?? null,
+        items: tileItems,
+      });
+    }
+  }
+
+  const agentPositions: Record<string, { q: number; r: number }> = {};
+  for (const [agentId, coord] of MOCK_AGENT_POSITIONS) {
+    agentPositions[agentId] = coord;
+  }
+
+  return { tiles, agentPositions };
+}
+
+export const MOCK_GRID_STATE = generateMockGridState();
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 export const CLASS_CONFIG: Record<
   AgentClass,
-  { emoji: string; color: string; borderColor: string; bgColor: string; badgeClass: string }
+  { emoji: string; image: string; color: string; borderColor: string; bgColor: string; badgeClass: string }
 > = {
   WARRIOR: {
     emoji: "\u2694\uFE0F",
+    image: "/agents/agent.warrior.png",
     color: "text-blood",
     borderColor: "border-blood",
     bgColor: "bg-blood/10",
@@ -258,6 +347,7 @@ export const CLASS_CONFIG: Record<
   },
   TRADER: {
     emoji: "\uD83D\uDCCA",
+    image: "/agents/agent.trader.png",
     color: "text-blue-400",
     borderColor: "border-blue-500",
     bgColor: "bg-blue-500/10",
@@ -265,6 +355,7 @@ export const CLASS_CONFIG: Record<
   },
   SURVIVOR: {
     emoji: "\uD83D\uDEE1\uFE0F",
+    image: "/agents/agent.survivor.png",
     color: "text-green-400",
     borderColor: "border-green-500",
     bgColor: "bg-green-500/10",
@@ -272,6 +363,7 @@ export const CLASS_CONFIG: Record<
   },
   PARASITE: {
     emoji: "\uD83E\uDDA0",
+    image: "/agents/agent.parasite.png",
     color: "text-accent-light",
     borderColor: "border-accent",
     bgColor: "bg-accent/10",
@@ -279,6 +371,7 @@ export const CLASS_CONFIG: Record<
   },
   GAMBLER: {
     emoji: "\uD83C\uDFB2",
+    image: "/agents/agent.gambler.png",
     color: "text-gold",
     borderColor: "border-gold",
     bgColor: "bg-gold/10",

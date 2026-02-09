@@ -60,6 +60,31 @@ import {
   type MoveResult,
 } from './grid';
 import type { SponsorEffect } from '../betting/sponsorship';
+// ── Hex Grid & Item System ──
+import {
+  moveAgent as hexMoveAgent,
+  getTile,
+  isAdjacent as hexIsAdjacent,
+  hexKey,
+  getNeighborInDirection,
+  isInGrid,
+  hexEquals,
+} from './hex-grid';
+import type { HexGridState, HexCoord as HexGridCoord } from './hex-grid';
+import {
+  spawnItems,
+  checkTraps,
+  pickupItem,
+  getPickupableItems,
+  addItemsToGrid,
+  removeItemFromTile,
+} from './items';
+import type {
+  ItemPickupResult,
+  TrapTriggerResult,
+  BuffTickResult,
+  ItemBuff,
+} from './items';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -85,6 +110,16 @@ export interface EpochResult {
   marketData: MarketData;
   actions: Map<string, EpochActions>;
   moveResults: MoveResult[];
+  /** Item pickups this epoch (after movement). */
+  itemPickups: ItemPickupResult[];
+  /** Trap triggers this epoch (after movement). */
+  trapTriggers: TrapTriggerResult[];
+  /** Items spawned this epoch (after combat). */
+  itemsSpawned: number;
+  /** Detailed item spawn data for WebSocket broadcasting. */
+  spawnedItems: { id: string; type: import('../arena/types/hex').ItemType; coord: { q: number; r: number }; epochNumber: number; isCornucopia: boolean }[];
+  /** Buff tick results (expired/active buffs at end of epoch). */
+  buffTicks: BuffTickResult[];
   /** Sponsor HP boosts applied this epoch (before predictions). */
   sponsorBoosts: SponsorBoostResult[];
   /** Skill activations this epoch (BERSERK, INSIDER_INFO, FORTIFY, SIPHON, ALL_IN). */
@@ -209,8 +244,11 @@ export async function processEpoch(
     }
   }
 
-  // ── Step 2c: Process movement actions ───────────────────────────────
+  // ── Step 2c: Process movement actions (with hex grid sync) ──────────
   const moveResults = processMovements(actions, arena);
+
+  // ── Step 2d: Item pickup phase (after movement, before combat) ──────
+  const { itemPickups, trapTriggers } = processItemPickups(arena);
 
   // ── Step 2.5: Apply sponsor HP boosts ─────────────────────────────────
   const sponsorBoosts = applySponsorBoosts(arena, sponsorEffects);
@@ -332,6 +370,24 @@ export async function processEpoch(
 
   // ── Step 4.5: Process SIPHON skill ─────────────────────────────────────
   processSiphonSkills(skillActivations, arena);
+
+  // ── Step 4.6: Item spawn phase (after combat) ─────────────────────────
+  const newItems = spawnItems(arena.grid, epochNumber);
+  if (newItems.length > 0) {
+    arena.updateGrid(addItemsToGrid(newItems, arena.grid));
+    console.log(`[Items] Spawned ${newItems.length} items on epoch ${epochNumber}`);
+  }
+  const itemsSpawned = newItems.length;
+  const spawnedItems = newItems.map(item => ({
+    id: item.id,
+    type: item.type,
+    coord: { q: item.coord.q, r: item.coord.r },
+    epochNumber: item.spawnedAtEpoch,
+    isCornucopia: item.isCornucopia,
+  }));
+
+  // ── Step 4.7: Tick item buffs (decrement durations, remove expired) ───
+  const buffTicks = arena.tickBuffs();
 
   // ── Step 5: Apply bleed ───────────────────────────────────────────────
   const bleedAgentStates = buildCombatAgentStates(arena);
@@ -482,6 +538,11 @@ export async function processEpoch(
     marketData,
     actions,
     moveResults,
+    itemPickups,
+    trapTriggers,
+    itemsSpawned,
+    spawnedItems,
+    buffTicks,
     sponsorBoosts,
     skillActivations,
     allianceEvents,
@@ -707,7 +768,9 @@ function resolveAttackTargets(
  * before fighting. Moves are validated for adjacency and occupancy.
  *
  * Dead agents and agents without a move action are skipped.
- * If two agents try to move to the same hex, only the first processed succeeds.
+ * Collision handling: if two agents try to move to the same hex, both stay put.
+ *
+ * Also syncs movement with the 19-tile hex grid (arena.grid).
  */
 function processMovements(
   actions: Map<string, EpochActions>,
@@ -719,22 +782,130 @@ function processMovements(
   // If no positions assigned (backward compat), skip movement entirely
   if (positions.size === 0) return results;
 
+  // Phase 1: Collect all intended moves and detect collisions
+  const intendedMoves = new Map<string, { agentId: string; from: HexCoord; to: HexCoord }>();
+  const targetCounts = new Map<string, string[]>(); // hexKey -> agentIds wanting to move there
+
   for (const [agentId, action] of actions) {
     if (!action.move) continue;
 
     const agent = arena.getAgent(agentId);
     if (!agent || !agent.alive()) continue;
 
-    const result = executeMove(agentId, action.move, positions);
+    const from = positions.get(agentId);
+    if (!from) continue;
+
+    const to = action.move;
+    const toKey = `${to.q},${to.r}`;
+
+    intendedMoves.set(agentId, { agentId, from, to });
+    const existing = targetCounts.get(toKey) ?? [];
+    existing.push(agentId);
+    targetCounts.set(toKey, existing);
+  }
+
+  // Phase 2: Mark collisions (2+ agents targeting the same hex -> all fail)
+  const collisionAgents = new Set<string>();
+  for (const [_toKey, agentIds] of targetCounts) {
+    if (agentIds.length > 1) {
+      for (const id of agentIds) {
+        collisionAgents.add(id);
+      }
+    }
+  }
+
+  // Phase 3: Execute non-colliding moves
+  for (const [agentId, move] of intendedMoves) {
+    if (collisionAgents.has(agentId)) {
+      // Collision: both agents stay put
+      results.push({
+        agentId,
+        from: move.from,
+        to: move.to,
+        success: false,
+        reason: 'Collision: another agent targeted the same hex',
+      });
+      continue;
+    }
+
+    const result = executeMove(agentId, move.to, positions);
     results.push(result);
 
-    // Update the agent's position on the actual agent object
+    // Sync with hex grid and agent position
     if (result.success) {
-      agent.position = { q: action.move.q, r: action.move.r };
+      const agent = arena.getAgent(agentId);
+      if (agent) {
+        agent.position = { q: move.to.q, r: move.to.r };
+        // Update the 19-tile hex grid
+        arena.updateGrid(
+          hexMoveAgent(agentId, move.from, move.to, arena.grid),
+        );
+      }
     }
   }
 
   return results;
+}
+
+/**
+ * Process item pickups and trap triggers after movement.
+ *
+ * For each alive agent on a tile with items:
+ * 1. Check for traps first (TRAP items trigger on entry)
+ * 2. Pick up non-trap items (RATION, WEAPON, SHIELD, ORACLE)
+ * 3. Apply HP changes and buffs
+ */
+function processItemPickups(
+  arena: ArenaManager,
+): { itemPickups: ItemPickupResult[]; trapTriggers: TrapTriggerResult[] } {
+  const itemPickups: ItemPickupResult[] = [];
+  const trapTriggers: TrapTriggerResult[] = [];
+
+  for (const agent of arena.getActiveAgents()) {
+    if (!agent.position) continue;
+
+    // Check for traps first
+    const trapResult = checkTraps(agent.id, agent.position, arena.grid);
+    if (trapResult) {
+      trapTriggers.push(trapResult);
+      agent.takeDamage(trapResult.damage);
+      // Remove consumed trap from grid
+      arena.updateGrid(
+        removeItemFromTile(trapResult.item.id, trapResult.item.coord, arena.grid),
+      );
+      console.log(`[Items] ${agent.name} triggered a TRAP at (${agent.position.q},${agent.position.r}) for ${trapResult.damage} damage!`);
+    }
+
+    // Pick up non-trap items on this tile
+    const pickupable = getPickupableItems(agent.position, arena.grid);
+    for (const item of pickupable) {
+      if (!agent.alive()) break; // Agent may have died from trap
+
+      const pickup = pickupItem(agent.id, item, agent.hp, agent.maxHp);
+      itemPickups.push(pickup);
+
+      // Apply HP change
+      if (pickup.hpChange > 0) {
+        agent.heal(pickup.hpChange);
+      } else if (pickup.hpChange < 0) {
+        agent.takeDamage(Math.abs(pickup.hpChange));
+      }
+
+      // Apply buff if present
+      if (pickup.buff) {
+        arena.addAgentBuff(agent.id, pickup.buff);
+      }
+
+      // Remove consumed item from grid
+      arena.updateGrid(
+        removeItemFromTile(item.id, item.coord, arena.grid),
+      );
+
+      console.log(`[Items] ${agent.name} picked up ${item.type} at (${item.coord.q},${item.coord.r}): ${pickup.effect}`);
+    }
+  }
+
+  return { itemPickups, trapTriggers };
 }
 
 /**
@@ -752,6 +923,7 @@ function buildCombatAgentStates(
       agentClass: agent.agentClass,
       activeSkill: agent.skillActiveThisEpoch ? agent.getSkillDefinition().name : undefined,
       allyId: agent.allyId,
+      position: agent.position,
     });
   }
   return states;

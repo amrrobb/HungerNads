@@ -38,14 +38,29 @@ export interface AgentPersonality {
 // ---------------------------------------------------------------------------
 
 const HEX_GRID_RULES = `
-ARENA GRID - HEX POSITIONING:
-The arena is a 7-hex honeycomb grid: CENTER + 6 surrounding hexes (EAST, SE, SW, WEST, NW, NE).
+ARENA GRID - 19-TILE HEX POSITIONING:
+The arena is a 19-tile hexagonal grid with 3 rings:
+- CORNUCOPIA (center 7 tiles, rings 0-1): High-value items spawn here at battle start. Weapons, shields, rations.
+- EDGE (outer 12 tiles, ring 2): Dangerous perimeter. You start here. Fewer resources.
+Each agent starts on an EDGE tile and must move inward to reach the cornucopia loot.
+
+MOVEMENT:
 - You occupy one hex. Other agents occupy other hexes.
-- ADJACENT agents are on neighboring hexes. You can only ATTACK/SABOTAGE adjacent agents.
+- ADJACENT agents are on neighboring hexes (distance 1). You can only ATTACK/SABOTAGE adjacent agents.
 - You may MOVE to an empty adjacent hex each epoch (optional).
-- Moving lets you get in range to attack, or retreat from threats.
+- Moving lets you get in range to attack, retreat from threats, or pick up items.
 - Only one agent per hex. You cannot move to an occupied hex.
-- If you want to move, include "move": {"q": <number>, "r": <number>} in your response.`;
+- If two agents try to move to the same hex, BOTH stay put (collision).
+- If you want to move, include "move": {"q": <number>, "r": <number>} in your response.
+
+ITEMS ON THE FIELD:
+Items spawn on tiles. Walk onto a tile to pick up items automatically.
+- RATION (40% drop): Heal 50-150 HP instantly.
+- WEAPON (25% drop): +25% ATK damage for 3 epochs. Stacks.
+- SHIELD (20% drop): Free defend (no HP cost) for 2 epochs.
+- TRAP (10% drop): Hidden! Deals 100 HP damage when you step on it. You can't see traps.
+- ORACLE (5% drop): See all agents' predictions for 1 epoch.
+Cornucopia tiles have better loot at battle start. New items spawn each epoch on empty tiles.`;
 
 const COMBAT_TRIANGLE_RULES = `
 COMBAT SYSTEM - 3-WAY TRIANGLE:

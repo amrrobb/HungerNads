@@ -34,6 +34,11 @@ import { SurvivorAgent } from '../agents/survivor';
 import { ParasiteAgent } from '../agents/parasite';
 import { GamblerAgent } from '../agents/gambler';
 import type { BaseAgent } from '../agents/base-agent';
+import { BettingPool, DEFAULT_BETTING_LOCK_AFTER_EPOCH } from '../betting/pool';
+import type { BettingPhase } from '../betting/pool';
+import { SponsorshipManager } from '../betting/sponsorship';
+import { updateBattle } from '../db/schema';
+import { createChainClient, type AgentResult as ChainAgentResult } from '../chain/client';
 
 // Re-export BattleEvent for consumers that import from arena.ts
 export type { BattleEvent } from '../api/websocket';
@@ -51,7 +56,25 @@ export interface BattleAgent {
   isAlive: boolean;
   kills: number;
   epochsSurvived: number;
+  /** Rolling buffer of the agent's recent LLM reasoning snippets. */
+  thoughts: string[];
 }
+
+/** Per-battle configuration passed from POST /battle/create. */
+export interface BattleConfig {
+  /** Max epochs before timeout (default 100). */
+  maxEpochs: number;
+  /** Epochs to keep betting open (default DEFAULT_BETTING_LOCK_AFTER_EPOCH). */
+  bettingWindowEpochs: number;
+  /** Which assets agents can predict on (default all four). */
+  assets: string[];
+}
+
+export const DEFAULT_BATTLE_CONFIG: BattleConfig = {
+  maxEpochs: 100,
+  bettingWindowEpochs: DEFAULT_BETTING_LOCK_AFTER_EPOCH,
+  assets: ['ETH', 'BTC', 'SOL', 'MON'],
+};
 
 export interface BattleState {
   battleId: string;
@@ -61,6 +84,10 @@ export interface BattleState {
   startedAt: string | null;
   completedAt: string | null;
   winnerId: string | null;
+  /** Betting lifecycle phase: OPEN -> LOCKED -> SETTLED. */
+  bettingPhase: BettingPhase;
+  /** Per-battle configuration. */
+  config: BattleConfig;
 }
 
 /**
@@ -79,6 +106,10 @@ export interface InternalEvent {
 // Epoch interval: configurable via EPOCH_INTERVAL_MS env var (default 5 min)
 // For demo: set EPOCH_INTERVAL_MS=15000 (15 seconds) in .dev.vars
 const DEFAULT_EPOCH_INTERVAL_MS = 300_000;
+
+// Maximum epochs before a battle is force-completed by timeout.
+// If 2+ agents are alive at this point, the one with the highest HP wins.
+const MAX_EPOCHS = 100;
 
 // ─── Agent Factory ────────────────────────────────────────────────
 
@@ -117,6 +148,7 @@ function createAgentFromState(agent: BattleAgent, llmKeys?: LLMKeys): BaseAgent 
   instance.isAlive = agent.isAlive;
   instance.kills = agent.kills;
   instance.epochsSurvived = agent.epochsSurvived;
+  instance.thoughts = agent.thoughts ?? [];
   instance.llmKeys = llmKeys;
 
   return instance;
@@ -128,7 +160,7 @@ function createAgentFromState(agent: BattleAgent, llmKeys?: LLMKeys): BaseAgent 
  */
 function reconstructArena(battleState: BattleState, llmKeys?: LLMKeys): ArenaManager {
   const arena = new ArenaManager(battleState.battleId, {
-    maxEpochs: 100,
+    maxEpochs: battleState.config?.maxEpochs ?? DEFAULT_BATTLE_CONFIG.maxEpochs,
     epochIntervalMs: DEFAULT_EPOCH_INTERVAL_MS,
   });
 
@@ -159,6 +191,9 @@ function syncEpochResult(battleState: BattleState, result: EpochResult): void {
 
     stored.hp = agentState.hp;
     stored.isAlive = agentState.isAlive;
+    if (agentState.thoughts) {
+      stored.thoughts = agentState.thoughts;
+    }
   }
 
   // Sync kills and epochsSurvived from the arena's in-memory agents
@@ -216,6 +251,7 @@ export class ArenaDO implements DurableObject {
     agentIds: string[],
     agentClasses?: string[],
     agentNames?: string[],
+    battleConfig?: Partial<BattleConfig>,
   ): Promise<BattleState> {
     // Initialize agent states
     const agents: Record<string, BattleAgent> = {};
@@ -232,8 +268,12 @@ export class ArenaDO implements DurableObject {
         isAlive: true,
         kills: 0,
         epochsSurvived: 0,
+        thoughts: [],
       };
     }
+
+    // Merge caller config with defaults
+    const config: BattleConfig = { ...DEFAULT_BATTLE_CONFIG, ...battleConfig };
 
     const battleState: BattleState = {
       battleId,
@@ -243,10 +283,20 @@ export class ArenaDO implements DurableObject {
       startedAt: new Date().toISOString(),
       completedAt: null,
       winnerId: null,
+      bettingPhase: 'OPEN',
+      config,
     };
+
+    // Build UUID → numeric agent ID mapping for on-chain calls.
+    // Contracts use uint256 agent IDs; we assign sequential 1-based indices.
+    const chainAgentMap: Record<string, number> = {};
+    for (let i = 0; i < agentIds.length; i++) {
+      chainAgentMap[agentIds[i]] = i + 1;
+    }
 
     // Persist state
     await this.state.storage.put('battleState', battleState);
+    await this.state.storage.put('chainAgentMap', chainAgentMap);
 
     // Schedule the first epoch
     await this.state.storage.setAlarm(Date.now() + this.epochIntervalMs);
@@ -258,6 +308,17 @@ export class ArenaDO implements DurableObject {
       epoch: 0,
       timestamp: new Date().toISOString(),
       data: { agents, agentCount: agentIds.length },
+    });
+
+    // Broadcast initial betting phase (OPEN)
+    const sockets = this.state.getWebSockets();
+    broadcastEvent(sockets, {
+      type: 'betting_phase_change',
+      data: {
+        phase: 'OPEN',
+        epoch: 0,
+        reason: 'Battle started — betting is open',
+      },
     });
 
     // Start streaming $HNADS curve events to spectators
@@ -291,18 +352,43 @@ export class ArenaDO implements DurableObject {
     // Retrieve previous market data for prediction resolution
     const previousMarketData = await this.state.storage.get<MarketData>('previousMarketData');
 
+    // ── Fetch sponsor effects for this epoch ─────────────────────
+    // Sponsorships placed for the upcoming epoch are resolved here
+    // and passed to the epoch processor for HP boosts + combat mods.
+    let sponsorEffects: Map<string, import('../betting/sponsorship').SponsorEffect> | undefined;
+    try {
+      const sponsorMgr = new SponsorshipManager(this.env.DB);
+      const nextEpoch = battleState.epoch + 1; // epoch is about to be incremented inside processEpoch
+      sponsorEffects = await sponsorMgr.getEpochEffects(battleState.battleId, nextEpoch);
+      if (sponsorEffects.size > 0) {
+        console.log(
+          `[ArenaDO] ${sponsorEffects.size} sponsor effect(s) for epoch ${nextEpoch}`,
+        );
+      }
+    } catch (err) {
+      console.error('[ArenaDO] Failed to fetch sponsor effects:', err);
+      // Non-fatal: proceed without sponsor effects
+    }
+
     // ── Run the full epoch processor ─────────────────────────────
     // This handles ALL phases:
     //   1. Fetch market data
     //   2. Collect agent decisions (with LLM calls)
+    //   2.5. Apply sponsor HP boosts
     //   3. Resolve predictions
-    //   4. Resolve combat
+    //   4. Resolve combat (with sponsor freeDefend + attackBoost)
     //   5. Apply bleed
     //   6. Check deaths
     //   7. Check win condition
     let result: EpochResult;
     try {
-      result = await runEpoch(arena, this.priceFeed, previousMarketData ?? undefined);
+      result = await runEpoch(
+        arena,
+        this.priceFeed,
+        previousMarketData ?? undefined,
+        undefined, // generateFinalWords — use default
+        sponsorEffects,
+      );
     } catch (err) {
       console.error(`[ArenaDO] Epoch processing failed:`, err);
       // On failure, don't crash the DO - just skip this epoch and retry
@@ -328,8 +414,214 @@ export class ArenaDO implements DurableObject {
     // ── Broadcast rich events to spectators ──────────────────────
     this.broadcastEpochResult(result);
 
+    // ── Betting phase transition: OPEN -> LOCKED ──────────────────
+    // After N epochs, lock betting so no new bets can be placed.
+    // Per-battle config takes priority, then env var, then global default.
+    const lockAfter = battleState.config?.bettingWindowEpochs
+      ?? (this.env.BETTING_LOCK_AFTER_EPOCH
+        ? parseInt(this.env.BETTING_LOCK_AFTER_EPOCH, 10)
+        : DEFAULT_BETTING_LOCK_AFTER_EPOCH);
+
+    if (battleState.bettingPhase === 'OPEN' && battleState.epoch >= lockAfter) {
+      battleState.bettingPhase = 'LOCKED';
+      console.log(
+        `[ArenaDO] Betting locked for battle ${battleState.battleId} at epoch ${battleState.epoch}`,
+      );
+
+      // Persist phase change to D1
+      try {
+        await updateBattle(this.env.DB, battleState.battleId, {
+          betting_phase: 'LOCKED',
+        });
+      } catch (err) {
+        console.error(`[ArenaDO] Failed to update D1 betting_phase to LOCKED:`, err);
+      }
+
+      // Broadcast phase change to spectators
+      const sockets = this.state.getWebSockets();
+      broadcastEvent(sockets, {
+        type: 'betting_phase_change',
+        data: {
+          phase: 'LOCKED',
+          epoch: battleState.epoch,
+          reason: `Betting locked after epoch ${lockAfter}`,
+        },
+      });
+    }
+
+    // ── Max epochs timeout guard ──────────────────────────────────
+    // If the battle didn't end naturally but we've hit the epoch limit,
+    // force-complete by declaring the highest-HP agent the winner.
+    const maxEpochs = battleState.config?.maxEpochs ?? MAX_EPOCHS;
+    if (!result.battleComplete && battleState.epoch >= maxEpochs) {
+      console.log(
+        `[ArenaDO] Battle ${battleState.battleId} hit max epochs (${maxEpochs}) — forcing timeout win`,
+      );
+
+      // Determine winner: agent with highest HP among survivors
+      const aliveAgents = Object.values(battleState.agents)
+        .filter((a) => a.isAlive)
+        .sort((a, b) => b.hp - a.hp);
+
+      const timeoutWinner = aliveAgents[0] ?? null;
+      const winnerId = timeoutWinner?.id ?? null;
+
+      // Update battle state for persistence
+      battleState.status = 'completed';
+      battleState.completedAt = new Date().toISOString();
+      battleState.winnerId = winnerId;
+
+      // Broadcast timeout_win event to spectators
+      if (timeoutWinner) {
+        const sockets = this.state.getWebSockets();
+        broadcastEvent(sockets, {
+          type: 'timeout_win',
+          data: {
+            winnerId: timeoutWinner.id,
+            winnerName: timeoutWinner.name,
+            winnerClass: timeoutWinner.class,
+            winnerHp: timeoutWinner.hp,
+            totalEpochs: battleState.epoch,
+            survivors: aliveAgents.map((a) => ({
+              id: a.id,
+              name: a.name,
+              class: a.class,
+              hp: a.hp,
+            })),
+          },
+        });
+
+        // Also broadcast battle_end for backward compatibility
+        broadcastEvent(sockets, {
+          type: 'battle_end',
+          data: {
+            winnerId: timeoutWinner.id,
+            winnerName: timeoutWinner.name,
+            totalEpochs: battleState.epoch,
+          },
+        });
+      }
+
+      // Fall through to the completion handler below
+      result = { ...result, battleComplete: true, winner: timeoutWinner ? {
+        id: timeoutWinner.id,
+        name: timeoutWinner.name,
+        class: timeoutWinner.class,
+      } : undefined };
+    }
+
     // ── Handle battle completion or schedule next epoch ───────────
     if (result.battleComplete) {
+      const winnerId = result.winner?.id ?? null;
+
+      // ── Transition betting phase to SETTLED ──────────────────────
+      battleState.bettingPhase = 'SETTLED';
+
+      // ── Auto-settle bets ────────────────────────────────────────
+      // Settle all bets in D1: losers get payout=0, winners get
+      // proportional share of the 85% pool + any incoming jackpot.
+      // 3% carries forward as jackpot, 2% goes to top bettor bonus.
+      if (winnerId) {
+        try {
+          const pool = new BettingPool(this.env.DB);
+          const settlement = await pool.settleBattle(battleState.battleId, winnerId);
+          console.log(
+            `[ArenaDO] Bets settled for battle ${battleState.battleId}: ` +
+            `${settlement.payouts.length} winner(s), ` +
+            `treasury=${settlement.treasury}, burn=${settlement.burn}, ` +
+            `jackpot=${settlement.jackpotCarryForward}, topBettor=${settlement.topBettorBonus?.bonus ?? 0}`,
+          );
+
+          // Broadcast settlement results to spectators before closing connections
+          if (settlement.payouts.length > 0) {
+            const poolSummary = await pool.getBattlePool(battleState.battleId);
+            const sockets = this.state.getWebSockets();
+            broadcastEvent(sockets, {
+              type: 'bets_settled',
+              data: {
+                battleId: battleState.battleId,
+                winnerId,
+                totalPool: poolSummary.total,
+                payouts: settlement.payouts,
+                treasury: settlement.treasury,
+                burn: settlement.burn,
+                jackpotCarryForward: settlement.jackpotCarryForward,
+                jackpotApplied: settlement.jackpotApplied,
+                topBettorBonus: settlement.topBettorBonus,
+              },
+            });
+          }
+        } catch (err) {
+          console.error(`[ArenaDO] Bet settlement failed for battle ${battleState.battleId}:`, err);
+          // Settlement failure is non-fatal — can be retried via POST /battle/:id/settle
+        }
+      }
+
+      // Broadcast betting phase SETTLED to spectators
+      {
+        const sockets = this.state.getWebSockets();
+        broadcastEvent(sockets, {
+          type: 'betting_phase_change',
+          data: {
+            phase: 'SETTLED',
+            epoch: battleState.epoch,
+            reason: 'Battle completed — bets settled',
+          },
+        });
+      }
+
+      // ── Record results + settle bets on-chain ──────────────────
+      // Writes to HungernadsArena.recordResult() and HungernadsBetting.settleBattle().
+      // Non-blocking: chain failures are logged but don't crash the battle.
+      // Falls back gracefully when env vars are missing (dev mode).
+      const chainClient = createChainClient(this.env);
+      if (chainClient && winnerId) {
+        const chainAgentMap = await this.state.storage.get<Record<string, number>>('chainAgentMap');
+        if (chainAgentMap) {
+          const numericWinnerId = chainAgentMap[winnerId] ?? 0;
+
+          // Build per-agent results for the arena contract
+          const chainResults: ChainAgentResult[] = Object.values(battleState.agents).map((agent) => ({
+            agentId: BigInt(chainAgentMap[agent.id] ?? 0),
+            finalHp: BigInt(Math.max(0, Math.round(agent.hp))),
+            kills: BigInt(agent.kills),
+            survivedEpochs: BigInt(agent.epochsSurvived),
+            isWinner: agent.id === winnerId,
+          }));
+
+          // Record result on HungernadsArena
+          try {
+            await chainClient.recordResult(battleState.battleId, numericWinnerId, chainResults);
+            console.log(`[ArenaDO] Battle ${battleState.battleId} result recorded on-chain`);
+          } catch (err) {
+            console.error(`[ArenaDO] On-chain recordResult failed for ${battleState.battleId}:`, err);
+          }
+
+          // Settle bets on HungernadsBetting
+          try {
+            await chainClient.settleBets(battleState.battleId, numericWinnerId);
+            console.log(`[ArenaDO] Bets settled on-chain for ${battleState.battleId}`);
+          } catch (err) {
+            console.error(`[ArenaDO] On-chain settleBets failed for ${battleState.battleId}:`, err);
+          }
+        } else {
+          console.warn(`[ArenaDO] No chainAgentMap found — skipping on-chain result recording`);
+        }
+      }
+
+      // ── Update D1 battle row ────────────────────────────────────
+      try {
+        await updateBattle(this.env.DB, battleState.battleId, {
+          status: 'completed',
+          ended_at: new Date().toISOString(),
+          winner_id: winnerId,
+          epoch_count: battleState.epoch,
+          betting_phase: 'SETTLED',
+        });
+      } catch (err) {
+        console.error(`[ArenaDO] Failed to update D1 battle row:`, err);
+      }
+
       // Stop the curve stream — no more spectators after this
       this.stopCurveStream();
 
@@ -490,11 +782,23 @@ export class ArenaDO implements DurableObject {
               class: a.class,
               hp: a.hp,
               isAlive: a.isAlive,
+              thoughts: (a as BattleAgent & { thoughts?: string[] }).thoughts ?? [],
             })),
             battleComplete: battleState.status === 'completed',
           },
         };
         server.send(JSON.stringify(stateEvent));
+
+        // Send current betting phase so client knows immediately
+        const phaseEvent: BattleEvent = {
+          type: 'betting_phase_change',
+          data: {
+            phase: battleState.bettingPhase ?? 'OPEN',
+            epoch: battleState.epoch,
+            reason: 'Current betting phase on connect',
+          },
+        };
+        server.send(JSON.stringify(phaseEvent));
       }
 
       return new Response(null, { status: 101, webSocket: client });
@@ -507,6 +811,7 @@ export class ArenaDO implements DurableObject {
         agentIds?: string[];
         agentClasses?: string[];
         agentNames?: string[];
+        config?: Partial<BattleConfig>;
       };
       const agentIds = body.agentIds;
 
@@ -515,7 +820,7 @@ export class ArenaDO implements DurableObject {
       }
 
       const bid = body.battleId ?? crypto.randomUUID();
-      const battleState = await this.startBattle(bid, agentIds, body.agentClasses, body.agentNames);
+      const battleState = await this.startBattle(bid, agentIds, body.agentClasses, body.agentNames, body.config);
       return Response.json({ ok: true, battle: battleState });
     }
 
@@ -535,6 +840,20 @@ export class ArenaDO implements DurableObject {
         battleId: battleState?.battleId ?? null,
         epoch: battleState?.epoch ?? 0,
         status: battleState?.status ?? 'idle',
+      });
+    }
+
+    // Get betting phase
+    if (url.pathname === '/phase') {
+      const battleState = await this.getState();
+      if (!battleState) {
+        return Response.json({ error: 'No active battle' }, { status: 404 });
+      }
+      return Response.json({
+        battleId: battleState.battleId,
+        bettingPhase: battleState.bettingPhase ?? 'OPEN',
+        epoch: battleState.epoch,
+        status: battleState.status,
       });
     }
 

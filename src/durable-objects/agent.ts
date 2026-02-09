@@ -159,6 +159,10 @@ export class AgentDO implements DurableObject {
       // Validate with Zod schema
       const parsed = EpochActionsSchema.safeParse({
         prediction: result.prediction,
+        combatStance: result.combatStance ?? 'NONE',
+        combatTarget: result.combatTarget,
+        combatStake: result.combatStake,
+        // Legacy fields for backward compat
         attack: result.attack ?? undefined,
         defend: result.defend,
         reasoning: result.reasoning,
@@ -194,20 +198,27 @@ export class AgentDO implements DurableObject {
         direction: Math.random() > 0.5 ? 'UP' : 'DOWN',
         stake: Math.max(stake, 1),
       },
+      combatStance: 'NONE',
       reasoning: `Default ${agentClass} behavior: conservative prediction while LLM integration pending.`,
     };
 
-    // Class-specific combat defaults
+    // Class-specific combat defaults (triangle system)
     if (agentClass === 'WARRIOR') {
       const targets = arenaState.agents.filter((a: AgentState) => a.isAlive && a.id !== selfId);
       const weakest = targets.sort((a: AgentState, b: AgentState) => a.hp - b.hp)[0];
       if (weakest) {
-        actions.attack = { target: weakest.id, stake: Math.floor(hp * 0.1) };
+        actions.combatStance = 'ATTACK';
+        actions.combatTarget = weakest.id;
+        actions.combatStake = Math.floor(hp * 0.1);
       }
     }
 
     if (agentClass === 'SURVIVOR') {
-      actions.defend = true;
+      actions.combatStance = 'DEFEND';
+    }
+
+    if (agentClass === 'TRADER' || agentClass === 'PARASITE') {
+      actions.combatStance = 'NONE';
     }
 
     return actions;

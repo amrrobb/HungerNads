@@ -44,6 +44,13 @@ export interface AgentActionEvent {
       direction: 'UP' | 'DOWN';
       stake: number;
     };
+    /** Combat stance chosen: ATTACK, SABOTAGE, DEFEND, or NONE */
+    combatStance: 'ATTACK' | 'SABOTAGE' | 'DEFEND' | 'NONE';
+    /** Target agent name (for ATTACK/SABOTAGE) */
+    combatTarget?: string;
+    /** HP staked on combat (for ATTACK/SABOTAGE) */
+    combatStake?: number;
+    // Legacy fields kept for backward compat with existing dashboard
     attack?: {
       target: string;
       stake: number;
@@ -77,6 +84,7 @@ export interface EpochEndEvent {
       class: string;
       hp: number;
       isAlive: boolean;
+      thoughts: string[];
     }[];
     battleComplete: boolean;
   };
@@ -136,6 +144,82 @@ export interface CurveUpdateEvent {
   };
 }
 
+export interface BetsSettledEvent {
+  type: 'bets_settled';
+  data: {
+    battleId: string;
+    winnerId: string;
+    totalPool: number;
+    payouts: {
+      userAddress: string;
+      betAmount: number;
+      payout: number;
+    }[];
+    treasury: number;
+    burn: number;
+    /** 3% carry-forward to next battle's jackpot. */
+    jackpotCarryForward: number;
+    /** Jackpot from previous battles applied to this winners pool. */
+    jackpotApplied: number;
+    /** Top bettor bonus info (null if no winning bets). */
+    topBettorBonus: {
+      userAddress: string;
+      winningBetAmount: number;
+      bonus: number;
+    } | null;
+  };
+}
+
+/**
+ * Emitted when the betting phase transitions (OPEN -> LOCKED -> SETTLED).
+ * Clients should use this to enable/disable bet placement UI.
+ */
+export interface BettingPhaseChangeEvent {
+  type: 'betting_phase_change';
+  data: {
+    phase: 'OPEN' | 'LOCKED' | 'SETTLED';
+    /** Epoch at which the transition occurred. */
+    epoch: number;
+    /** Human-readable reason for the transition. */
+    reason: string;
+  };
+}
+
+/**
+ * Emitted when a battle reaches max epochs without a natural winner.
+ * The agent with the highest HP among survivors is declared the winner.
+ */
+export interface TimeoutWinEvent {
+  type: 'timeout_win';
+  data: {
+    winnerId: string;
+    winnerName: string;
+    winnerClass: string;
+    winnerHp: number;
+    totalEpochs: number;
+    survivors: { id: string; name: string; class: string; hp: number }[];
+  };
+}
+
+/**
+ * Emitted when a sponsor boost is applied to an agent during epoch processing.
+ * Includes the tier, HP change, and any combat modifiers granted.
+ */
+export interface SponsorBoostEvent {
+  type: 'sponsor_boost';
+  data: {
+    agentId: string;
+    tier: string;
+    hpBoost: number;
+    actualBoost: number;
+    hpBefore: number;
+    hpAfter: number;
+    freeDefend: boolean;
+    attackBoost: number;
+    message: string;
+  };
+}
+
 /** Discriminated union of all events streamed to spectators. */
 export type BattleEvent =
   | EpochStartEvent
@@ -148,7 +232,11 @@ export type BattleEvent =
   | OddsUpdateEvent
   | TokenBuyEvent
   | TokenSellEvent
-  | CurveUpdateEvent;
+  | CurveUpdateEvent
+  | BetsSettledEvent
+  | TimeoutWinEvent
+  | BettingPhaseChangeEvent
+  | SponsorBoostEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 
@@ -310,6 +398,26 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     },
   });
 
+  // ── 1.5. Sponsor boosts (parachute drops from the crowd) ───────────
+  if (result.sponsorBoosts) {
+    for (const boost of result.sponsorBoosts) {
+      events.push({
+        type: 'sponsor_boost',
+        data: {
+          agentId: boost.agentId,
+          tier: boost.tier,
+          hpBoost: boost.hpBoost,
+          actualBoost: boost.actualBoost,
+          hpBefore: boost.hpBefore,
+          hpAfter: boost.hpAfter,
+          freeDefend: boost.freeDefend,
+          attackBoost: boost.attackBoost,
+          message: boost.message,
+        },
+      });
+    }
+  }
+
   // ── 2. Agent actions ──────────────────────────────────────────────
   // Build a name lookup from agentStates (always has id + name)
   const nameById = new Map<string, string>();
@@ -328,10 +436,14 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
           direction: actions.prediction.direction,
           stake: actions.prediction.stake,
         },
+        combatStance: actions.combatStance ?? 'NONE',
+        combatTarget: actions.combatTarget,
+        combatStake: actions.combatStake,
+        // Legacy backward compat
         attack: actions.attack
           ? { target: actions.attack.target, stake: actions.attack.stake }
           : undefined,
-        defend: actions.defend ?? false,
+        defend: actions.combatStance === 'DEFEND' || (actions.defend ?? false),
         reasoning: actions.reasoning,
       },
     });

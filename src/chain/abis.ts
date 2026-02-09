@@ -483,9 +483,50 @@ export const hungernadsBettingAbi = [
   },
   {
     type: 'function',
+    name: 'JACKPOT_BPS',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'TOP_BETTOR_BPS',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'jackpotPool',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
     name: 'BPS_DENOMINATOR',
     stateMutability: 'view',
     inputs: [],
     outputs: [{ name: '', type: 'uint256' }],
+  },
+
+  // --- New Events ---
+  {
+    type: 'event',
+    name: 'JackpotAccumulated',
+    inputs: [
+      { name: 'battleId', type: 'bytes32', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+      { name: 'newJackpotPool', type: 'uint256', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'TopBettorBonusAwarded',
+    inputs: [
+      { name: 'battleId', type: 'bytes32', indexed: true },
+      { name: 'topBettor', type: 'address', indexed: true },
+      { name: 'bonus', type: 'uint256', indexed: false },
+    ],
   },
 ] as const;

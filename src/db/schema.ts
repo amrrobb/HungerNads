@@ -21,6 +21,8 @@ export interface BattleRow {
   ended_at: string | null;
   winner_id: string | null;
   epoch_count: number;
+  /** Betting lifecycle phase: OPEN, LOCKED, or SETTLED. */
+  betting_phase: string;
 }
 
 export interface EpochRow {
@@ -73,6 +75,8 @@ export interface SponsorshipRow {
   amount: number;
   message: string | null;
   accepted: number; // 0 or 1
+  tier: string | null;
+  epoch_number: number | null;
 }
 
 export interface BattleRecordRow {
@@ -86,6 +90,14 @@ export interface BattleRecordRow {
   killer_class: string | null;
   agent_class: string;
   recorded_at: string;
+}
+
+export interface FaucetClaimRow {
+  id: string;
+  wallet_address: string;
+  tier: number; // 1, 2, or 3
+  amount: number;
+  claimed_at: string;
 }
 
 // ─── Agent Queries ───────────────────────────────────────────────
@@ -125,7 +137,7 @@ export async function insertBattle(
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO battles (id, status, started_at, ended_at, winner_id, epoch_count) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO battles (id, status, started_at, ended_at, winner_id, epoch_count, betting_phase) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       battle.id,
@@ -134,6 +146,7 @@ export async function insertBattle(
       battle.ended_at ?? null,
       battle.winner_id ?? null,
       battle.epoch_count ?? 0,
+      battle.betting_phase ?? 'OPEN',
     )
     .run();
 }
@@ -186,6 +199,10 @@ export async function updateBattle(
   if (fields.epoch_count !== undefined) {
     setClauses.push('epoch_count = ?');
     values.push(fields.epoch_count);
+  }
+  if (fields.betting_phase !== undefined) {
+    setClauses.push('betting_phase = ?');
+    values.push(fields.betting_phase);
   }
 
   if (setClauses.length === 0) return;
@@ -415,7 +432,7 @@ export async function insertSponsorship(
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO sponsorships (id, battle_id, agent_id, sponsor_address, amount, message, accepted) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO sponsorships (id, battle_id, agent_id, sponsor_address, amount, message, accepted, tier, epoch_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     )
     .bind(
       sponsorship.id,
@@ -425,6 +442,8 @@ export async function insertSponsorship(
       sponsorship.amount,
       sponsorship.message,
       sponsorship.accepted,
+      sponsorship.tier,
+      sponsorship.epoch_number,
     )
     .run();
 }
@@ -461,6 +480,41 @@ export async function acceptSponsorship(
     .prepare('UPDATE sponsorships SET accepted = 1 WHERE id = ?')
     .bind(sponsorshipId)
     .run();
+}
+
+/**
+ * Get sponsorships for a specific epoch (for effect resolution during epoch processing).
+ */
+export async function getSponsorshipsByEpoch(
+  db: D1Database,
+  battleId: string,
+  epochNumber: number,
+): Promise<SponsorshipRow[]> {
+  const result = await db
+    .prepare(
+      'SELECT * FROM sponsorships WHERE battle_id = ? AND epoch_number = ? AND accepted = 1',
+    )
+    .bind(battleId, epochNumber)
+    .all<SponsorshipRow>();
+  return result.results;
+}
+
+/**
+ * Check if an agent already has a sponsorship for a given epoch (1-per-agent-per-epoch cap).
+ */
+export async function hasAgentSponsorshipForEpoch(
+  db: D1Database,
+  battleId: string,
+  agentId: string,
+  epochNumber: number,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      'SELECT COUNT(*) as cnt FROM sponsorships WHERE battle_id = ? AND agent_id = ? AND epoch_number = ?',
+    )
+    .bind(battleId, agentId, epochNumber)
+    .first<{ cnt: number }>();
+  return (row?.cnt ?? 0) > 0;
 }
 
 // ─── Battle Record Queries ──────────────────────────────────────
@@ -524,4 +578,198 @@ export async function getAgentBattleCount(
     .bind(agentId)
     .first<{ cnt: number }>();
   return row?.cnt ?? 0;
+}
+
+// ─── Faucet Queries ─────────────────────────────────────────────
+
+/** Faucet tier config: amount awarded per tier. */
+export const FAUCET_TIERS: Record<number, { amount: number; label: string }> = {
+  1: { amount: 100, label: 'Basic' },
+  2: { amount: 500, label: 'Bettor' },
+  3: { amount: 1000, label: 'Sponsor' },
+};
+
+/** 24 hours in milliseconds. */
+const FAUCET_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+export async function insertFaucetClaim(
+  db: D1Database,
+  claim: FaucetClaimRow,
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO faucet_claims (id, wallet_address, tier, amount, claimed_at) VALUES (?, ?, ?, ?, ?)',
+    )
+    .bind(claim.id, claim.wallet_address, claim.tier, claim.amount, claim.claimed_at)
+    .run();
+}
+
+/**
+ * Get the most recent faucet claim for a wallet + tier combo.
+ * Returns null if never claimed.
+ */
+export async function getLastFaucetClaim(
+  db: D1Database,
+  walletAddress: string,
+  tier: number,
+): Promise<FaucetClaimRow | null> {
+  return db
+    .prepare(
+      'SELECT * FROM faucet_claims WHERE wallet_address = ? AND tier = ? ORDER BY claimed_at DESC LIMIT 1',
+    )
+    .bind(walletAddress, tier)
+    .first<FaucetClaimRow>();
+}
+
+/**
+ * Check if a wallet can claim a specific faucet tier (24h cooldown).
+ * Returns { eligible, nextClaimAt } where nextClaimAt is null if eligible now.
+ */
+export async function checkFaucetEligibility(
+  db: D1Database,
+  walletAddress: string,
+  tier: number,
+): Promise<{ eligible: boolean; nextClaimAt: string | null }> {
+  const lastClaim = await getLastFaucetClaim(db, walletAddress, tier);
+  if (!lastClaim) {
+    return { eligible: true, nextClaimAt: null };
+  }
+
+  const lastClaimTime = new Date(lastClaim.claimed_at).getTime();
+  const nextEligible = lastClaimTime + FAUCET_COOLDOWN_MS;
+  const now = Date.now();
+
+  if (now >= nextEligible) {
+    return { eligible: true, nextClaimAt: null };
+  }
+
+  return {
+    eligible: false,
+    nextClaimAt: new Date(nextEligible).toISOString(),
+  };
+}
+
+/**
+ * Count total bets placed by a wallet address.
+ */
+export async function getUserBetCount(
+  db: D1Database,
+  walletAddress: string,
+): Promise<number> {
+  const row = await db
+    .prepare('SELECT COUNT(*) as cnt FROM bets WHERE user_address = ?')
+    .bind(walletAddress)
+    .first<{ cnt: number }>();
+  return row?.cnt ?? 0;
+}
+
+/**
+ * Count total sponsorships by a wallet address.
+ */
+export async function getUserSponsorCount(
+  db: D1Database,
+  walletAddress: string,
+): Promise<number> {
+  const row = await db
+    .prepare('SELECT COUNT(*) as cnt FROM sponsorships WHERE sponsor_address = ?')
+    .bind(walletAddress)
+    .first<{ cnt: number }>();
+  return row?.cnt ?? 0;
+}
+
+/**
+ * Get all faucet claims for a wallet, ordered by most recent first.
+ */
+export async function getFaucetClaimsByWallet(
+  db: D1Database,
+  walletAddress: string,
+): Promise<FaucetClaimRow[]> {
+  const result = await db
+    .prepare(
+      'SELECT * FROM faucet_claims WHERE wallet_address = ? ORDER BY claimed_at DESC',
+    )
+    .bind(walletAddress)
+    .all<FaucetClaimRow>();
+  return result.results;
+}
+
+// ─── Token Stats Queries ───────────────────────────────────────
+
+/**
+ * Get total amount of HNADS burned from sponsorships and total sponsorship count.
+ */
+export async function getTotalBurnedStats(
+  db: D1Database,
+): Promise<{ totalBurned: number; totalSponsorships: number }> {
+  const row = await db
+    .prepare(
+      'SELECT COALESCE(SUM(amount), 0) as total_burned, COUNT(*) as total_sponsorships FROM sponsorships',
+    )
+    .first<{ total_burned: number; total_sponsorships: number }>();
+  return {
+    totalBurned: row?.total_burned ?? 0,
+    totalSponsorships: row?.total_sponsorships ?? 0,
+  };
+}
+
+/**
+ * Get total amount of HNADS distributed via faucet.
+ */
+export async function getTotalFaucetDistributed(
+  db: D1Database,
+): Promise<{ totalDistributed: number; totalClaims: number }> {
+  const row = await db
+    .prepare(
+      'SELECT COALESCE(SUM(amount), 0) as total_distributed, COUNT(*) as total_claims FROM faucet_claims',
+    )
+    .first<{ total_distributed: number; total_claims: number }>();
+  return {
+    totalDistributed: row?.total_distributed ?? 0,
+    totalClaims: row?.total_claims ?? 0,
+  };
+}
+
+// ─── Jackpot Pool Queries ──────────────────────────────────────
+
+/**
+ * Get the current accumulated jackpot pool.
+ * The jackpot is 3% of each battle's pool carried forward to the next battle.
+ * Returns 0 if no jackpot has been accumulated yet.
+ */
+export async function getJackpotPool(db: D1Database): Promise<number> {
+  // Ensure the table exists (idempotent).
+  await db
+    .prepare(
+      'CREATE TABLE IF NOT EXISTS jackpot_pool (id INTEGER PRIMARY KEY CHECK (id = 1), amount REAL NOT NULL DEFAULT 0)',
+    )
+    .run();
+
+  const row = await db
+    .prepare('SELECT amount FROM jackpot_pool WHERE id = 1')
+    .first<{ amount: number }>();
+
+  return row?.amount ?? 0;
+}
+
+/**
+ * Set the jackpot pool to a new amount (replaces the previous value).
+ * Called after each battle settlement with the 3% carry-forward.
+ */
+export async function setJackpotPool(
+  db: D1Database,
+  amount: number,
+): Promise<void> {
+  // Ensure the table exists (idempotent).
+  await db
+    .prepare(
+      'CREATE TABLE IF NOT EXISTS jackpot_pool (id INTEGER PRIMARY KEY CHECK (id = 1), amount REAL NOT NULL DEFAULT 0)',
+    )
+    .run();
+
+  await db
+    .prepare(
+      'INSERT INTO jackpot_pool (id, amount) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET amount = excluded.amount',
+    )
+    .bind(amount)
+    .run();
 }

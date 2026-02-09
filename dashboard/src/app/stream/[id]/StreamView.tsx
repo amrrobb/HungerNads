@@ -1,12 +1,10 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import {
   HexBattleArena,
-  ActionFeed,
   MOCK_AGENTS,
   MOCK_FEED,
-  CLASS_CONFIG,
 } from "@/components/battle";
 import type { BattleAgent, FeedEntry } from "@/components/battle";
 import { useBattleStream } from "@/hooks/useBattleStream";
@@ -266,7 +264,6 @@ function detectHighlights(
   feed: FeedEntry[],
   agents: BattleAgent[],
   winner: BattleEndEvent["data"] | null,
-  prevHighlightCount: number,
 ): HighlightEvent[] {
   const highlights: HighlightEvent[] = [];
 
@@ -460,7 +457,7 @@ export default function StreamView({
   useEffect(() => {
     if (!showHighlights) return;
 
-    const allHighlights = detectHighlights(feed, agents, winner, 0);
+    const allHighlights = detectHighlights(feed, agents, winner);
     const newHighlights = allHighlights.filter(
       (h) => !processedHighlightIdsRef.current.has(h.id),
     );

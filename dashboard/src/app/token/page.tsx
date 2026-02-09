@@ -21,7 +21,6 @@ import {
   TrendingUp,
   ExternalLink,
   Coins,
-  Swords,
   Heart,
   Trophy,
   Gift,

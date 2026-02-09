@@ -60,6 +60,14 @@ export abstract class BaseAgent {
   /** Whether this agent's skill is active (activated) for the current epoch. */
   public skillActiveThisEpoch: boolean;
 
+  // ── Alliance System ──
+  /** ID of the current alliance partner (null if no alliance). */
+  public allyId: string | null;
+  /** Name of the current alliance partner. */
+  public allyName: string | null;
+  /** Epochs remaining in the current alliance. 0 = no alliance. */
+  public allianceEpochsRemaining: number;
+
   /** Maximum number of thoughts retained in the rolling buffer. */
   static readonly MAX_THOUGHTS = 5;
   /** Default cooldown for skills (epochs between uses). */
@@ -79,6 +87,9 @@ export abstract class BaseAgent {
     this.position = null;
     this.skillCooldownRemaining = 0;
     this.skillActiveThisEpoch = false;
+    this.allyId = null;
+    this.allyName = null;
+    this.allianceEpochsRemaining = 0;
   }
 
   // -------------------------------------------------------------------------
@@ -212,6 +223,82 @@ export abstract class BaseAgent {
     this.skillActiveThisEpoch = false;
   }
 
+  // -------------------------------------------------------------------------
+  // Alliance System
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check if this agent currently has an alliance.
+   */
+  hasAlliance(): boolean {
+    return this.allyId !== null && this.allianceEpochsRemaining > 0;
+  }
+
+  /**
+   * Check if this agent is allied with a specific agent.
+   */
+  isAlliedWith(agentId: string): boolean {
+    return this.allyId === agentId && this.allianceEpochsRemaining > 0;
+  }
+
+  /**
+   * Form an alliance with another agent.
+   * Both agents must call this on each other for consistency.
+   * Returns true if formation succeeded, false if already allied with someone else.
+   */
+  formAlliance(partnerId: string, partnerName: string, duration: number): boolean {
+    if (this.hasAlliance()) return false; // Already allied with someone
+    if (!this.isAlive) return false;
+    this.allyId = partnerId;
+    this.allyName = partnerName;
+    this.allianceEpochsRemaining = duration;
+    return true;
+  }
+
+  /**
+   * Break the current alliance (explicit break, not betrayal).
+   * Returns the former ally ID, or null if no alliance existed.
+   */
+  breakCurrentAlliance(): string | null {
+    const formerAlly = this.allyId;
+    this.allyId = null;
+    this.allyName = null;
+    this.allianceEpochsRemaining = 0;
+    return formerAlly;
+  }
+
+  /**
+   * Tick the alliance duration down by 1 epoch.
+   * If the alliance expires, clears the ally fields.
+   * Returns true if the alliance just expired this tick.
+   */
+  tickAlliance(): boolean {
+    if (!this.hasAlliance()) return false;
+    this.allianceEpochsRemaining--;
+    if (this.allianceEpochsRemaining <= 0) {
+      this.allyId = null;
+      this.allyName = null;
+      this.allianceEpochsRemaining = 0;
+      return true; // Alliance expired
+    }
+    return false;
+  }
+
+  /**
+   * Build an alliance context string for LLM prompts.
+   * Tells the agent about their current alliance status.
+   */
+  getAlliancePromptContext(): string {
+    if (this.hasAlliance()) {
+      return `\nALLIANCE STATUS: You have a NON-AGGRESSION PACT with ${this.allyName} (${this.allianceEpochsRemaining} epochs remaining).
+WARNING: If you ATTACK or SABOTAGE your ally, it counts as BETRAYAL — you deal DOUBLE damage but the alliance is immediately broken.
+You can explicitly break the alliance by setting "breakAlliance": true (no combat penalty, just ends the pact).`;
+    }
+    return `\nALLIANCE STATUS: You have no active alliance.
+You can propose a non-aggression pact by setting "proposeAlliance": "<agent name>".
+Alliances last 3 epochs. Max 1 alliance at a time. Attacking your ally = BETRAYAL (2x damage but alliance breaks).`;
+  }
+
   /**
    * Build a skill context string for LLM prompts.
    * Tells the agent about their skill availability and what it does.
@@ -313,6 +400,9 @@ To use: Include "useSkill": true in your JSON response.${
       skillName: skill.name,
       skillCooldownRemaining: this.skillCooldownRemaining,
       skillActive: this.skillActiveThisEpoch,
+      allyId: this.allyId,
+      allyName: this.allyName,
+      allianceEpochsRemaining: this.allianceEpochsRemaining,
     };
   }
 

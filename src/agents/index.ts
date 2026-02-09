@@ -80,6 +80,20 @@ export type { AgentPersonality, PersonalityKey } from './personalities';
 export { AGENT_NAME_POOLS, pickAgentName, pickRosterNames } from './names';
 
 // ---------------------------------------------------------------------------
+// Secretary Agent (Action Validator)
+// ---------------------------------------------------------------------------
+export {
+  validateAndCorrect,
+  buildSecretaryContext,
+} from './secretary';
+export type {
+  SecretaryResult,
+  SecretaryAgentContext,
+  ValidationIssue,
+  IssueSeverity,
+} from './secretary';
+
+// ---------------------------------------------------------------------------
 // Agent subclasses
 // ---------------------------------------------------------------------------
 export { WarriorAgent } from './warrior';

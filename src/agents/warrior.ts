@@ -86,9 +86,10 @@ export class WarriorAgent extends BaseAgent {
 
     // Build context hints for the LLM prompt
     const skillContext = this.getSkillPromptContext();
+    const allianceContext = this.getAlliancePromptContext();
     const tacticalHints = this.buildTacticalHints(
       hpRatio, isWinning, isDesperate, weakestTarget, aliveOthers,
-    ) + '\n' + skillContext;
+    ) + '\n' + skillContext + '\n' + allianceContext;
 
     // ----- Call LLM -----
     const others = aliveOthers.map(a => ({ name: a.name, class: a.class, hp: a.hp }));

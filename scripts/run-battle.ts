@@ -230,6 +230,43 @@ function printAgentDecisions(
   }
 }
 
+function printSecretaryCorrections(
+  result: EpochResult,
+  agentLookup: Map<string, { name: string; class: string }>,
+): void {
+  if (!result.secretaryReports) return;
+
+  // Only print if any agent had corrections
+  let hasCorrectionsToPrint = false;
+  for (const [, report] of result.secretaryReports) {
+    if (report.correctionCount > 0) {
+      hasCorrectionsToPrint = true;
+      break;
+    }
+  }
+  if (!hasCorrectionsToPrint) return;
+
+  console.log('');
+  console.log(c('bold', '  SECRETARY CORRECTIONS:'));
+
+  for (const [agentId, report] of result.secretaryReports) {
+    if (report.correctionCount === 0) continue;
+    const info = agentLookup.get(agentId);
+    if (!info) continue;
+
+    const tag = agentTag(info.name, info.class);
+    const corrections = report.issues.filter(i => i.action !== 'KEPT');
+    console.log(`    ${tag} ${c('yellow', `${corrections.length} correction(s):`)}`)
+
+    for (const issue of corrections) {
+      const actionLabel = issue.action === 'CORRECTED' ? c('yellow', 'FIX')
+        : issue.action === 'REMOVED' ? c('gray', 'REM')
+        : c('brightRed', 'DEF');
+      console.log(`           [${actionLabel}] ${c('gray', `${issue.field}: ${issue.message}`)}`);
+    }
+  }
+}
+
 function printPredictionResults(
   result: EpochResult,
   agentLookup: Map<string, { name: string; class: string }>,
@@ -272,15 +309,17 @@ function printCombatResults(
     const attackerTag = agentTag(attacker.name, attacker.class);
     const targetTag = agentTag(target.name, target.class);
 
+    const betrayalTag = cr.betrayal ? c('brightRed', ' [BETRAYAL! 2x DMG]') : '';
+
     if (cr.defended) {
       console.log(
         `    ${attackerTag} ${c('brightRed', '\u2694\uFE0F attacks')} ${targetTag} for ${cr.attackStake} HP ` +
-        `${c('brightGreen', '\u2192 BLOCKED!')} ${c('brightRed', `Attacker loses ${Math.abs(cr.hpTransfer)} HP`)}`,
+        `${c('brightGreen', '\u2192 BLOCKED!')} ${c('brightRed', `Attacker loses ${Math.abs(cr.hpTransfer)} HP`)}${betrayalTag}`,
       );
     } else {
       console.log(
         `    ${attackerTag} ${c('brightRed', '\u2694\uFE0F attacks')} ${targetTag} ` +
-        `${c('brightRed', `\u2192 HIT! Stole ${cr.hpTransfer} HP`)}`,
+        `${c('brightRed', `\u2192 HIT! Stole ${cr.hpTransfer} HP`)}${betrayalTag}`,
       );
     }
   }
@@ -291,6 +330,43 @@ function printCombatResults(
     console.log(
       `    ${agentTag(info.name, info.class)} ${c('cyan', `\uD83D\uDEE1\uFE0F Defense cost: -${dc.cost} HP`)}`,
     );
+  }
+}
+
+function printAllianceEvents(result: EpochResult): void {
+  if (!result.allianceEvents || result.allianceEvents.length === 0) return;
+
+  console.log('');
+  console.log(c('bold', '  ALLIANCES:'));
+
+  for (const evt of result.allianceEvents) {
+    switch (evt.type) {
+      case 'FORMED':
+        console.log(
+          `    ${c('cyan', '\uD83E\uDD1D')} ${c('brightCyan', evt.description)}`,
+        );
+        break;
+      case 'BETRAYED':
+        console.log(
+          `    ${c('brightRed', '\uD83D\uDDE1\uFE0F')} ${c('brightRed', evt.description)}`,
+        );
+        break;
+      case 'BROKEN':
+        console.log(
+          `    ${c('yellow', '\u26A0\uFE0F')} ${c('yellow', evt.description)}`,
+        );
+        break;
+      case 'EXPIRED':
+        console.log(
+          `    ${c('gray', '\u23F3')} ${c('gray', evt.description)}`,
+        );
+        break;
+      case 'PROPOSED':
+        console.log(
+          `    ${c('white', '\uD83D\uDCE8')} ${c('white', evt.description)}`,
+        );
+        break;
+    }
   }
 }
 
@@ -610,8 +686,10 @@ async function runBattle(): Promise<void> {
     printEpochHeader(result.epochNumber, maxEpochs);
     printMarketData(result.marketData);
     printAgentDecisions(result, agentLookup);
+    printSecretaryCorrections(result, agentLookup);
     printPredictionResults(result, agentLookup);
     printCombatResults(result, agentLookup);
+    printAllianceEvents(result);
     printBleed(result);
 
     // Print deaths from the engine's death checker

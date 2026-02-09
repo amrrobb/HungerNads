@@ -26,7 +26,14 @@ import type {
   MarketData,
   ArenaState,
   SkillActivation,
+  AllianceEvent,
 } from '../agents/schemas';
+import { ALLIANCE_DURATION } from '../agents/schemas';
+import {
+  validateAndCorrect,
+  buildSecretaryContext,
+  type SecretaryResult,
+} from '../agents/secretary';
 import { ArenaManager } from './arena';
 import { PriceFeed } from './price-feed';
 import {
@@ -82,11 +89,15 @@ export interface EpochResult {
   sponsorBoosts: SponsorBoostResult[];
   /** Skill activations this epoch (BERSERK, INSIDER_INFO, FORTIFY, SIPHON, ALL_IN). */
   skillActivations: SkillActivation[];
+  /** Alliance events this epoch (proposals, formations, betrayals, breaks, expirations). */
+  allianceEvents: AllianceEvent[];
   predictionResults: PredictionResult[];
   combatResults: CombatResult[];
   defendCosts: DefendCostResult[];
   bleedResults: BleedResult[];
   deaths: DeathEvent[];
+  /** Secretary agent validation reports per agent (corrections, fuzzy matches, etc). */
+  secretaryReports: Map<string, SecretaryResult>;
   agentStates: {
     id: string;
     name: string;
@@ -95,6 +106,9 @@ export interface EpochResult {
     isAlive: boolean;
     thoughts: string[];
     position?: HexCoord;
+    allyId?: string | null;
+    allyName?: string | null;
+    allianceEpochsRemaining?: number;
   }[];
   battleComplete: boolean;
   winner?: { id: string; name: string; class: string };
@@ -185,7 +199,7 @@ export async function processEpoch(
     marketData,
   };
 
-  const actions = await collectDecisions(activeAgents, arenaState);
+  const { actionsMap: actions, secretaryReports } = await collectDecisions(activeAgents, arenaState);
 
   // ── Step 2b: Record reasoning as agent thoughts (for spectator feed) ──
   for (const agent of activeAgents) {
@@ -203,6 +217,9 @@ export async function processEpoch(
 
   // ── Step 2.6: Activate skills ────────────────────────────────────────
   const skillActivations = activateSkills(actions, arena);
+
+  // ── Step 2.7: Process alliance proposals and breaks ─────────────────
+  const allianceEvents = processAlliances(actions, arena);
 
   // ── Step 3: Resolve predictions ───────────────────────────────────────
   const predictionInputs = buildPredictionInputs(actions, arena);
@@ -294,6 +311,23 @@ export async function processEpoch(
         target.takeDamage(Math.abs(cr.hpChangeTarget));
       }
     }
+
+    // Handle betrayal: break alliance on both sides and emit event
+    if (cr.betrayal && attacker && target) {
+      attacker.breakCurrentAlliance();
+      target.breakCurrentAlliance();
+      allianceEvents.push({
+        type: 'BETRAYED',
+        agentId: cr.attackerId,
+        agentName: attacker.name,
+        partnerId: cr.targetId,
+        partnerName: target.name,
+        description: `BETRAYAL! ${attacker.name} stabbed their ally ${target.name} in the back for ${Math.abs(cr.hpChangeTarget)} damage (2x betrayal bonus)!`,
+      });
+      console.log(
+        `[Alliance] BETRAYAL: ${attacker.name} attacked ally ${target.name}! Alliance broken, 2x damage applied.`,
+      );
+    }
   }
 
   // ── Step 4.5: Process SIPHON skill ─────────────────────────────────────
@@ -329,6 +363,27 @@ export async function processEpoch(
 
   // Eliminate dead agents on the arena and track kills
   for (const death of deaths) {
+    const deadAgent = arena.getAgent(death.agentId);
+
+    // If the dead agent had an alliance, break it cleanly
+    if (deadAgent && deadAgent.hasAlliance()) {
+      const formerAllyId = deadAgent.allyId!;
+      const formerAllyName = deadAgent.allyName!;
+      deadAgent.breakCurrentAlliance();
+      const partner = arena.getAgent(formerAllyId);
+      if (partner) {
+        partner.breakCurrentAlliance();
+      }
+      allianceEvents.push({
+        type: 'BROKEN',
+        agentId: death.agentId,
+        agentName: deadAgent.name,
+        partnerId: formerAllyId,
+        partnerName: formerAllyName,
+        description: `${deadAgent.name}'s death breaks the alliance with ${formerAllyName}. The pact dies with them.`,
+      });
+    }
+
     arena.eliminateAgent(death.agentId);
 
     // Credit kill to the killer if there was one
@@ -366,6 +421,48 @@ export async function processEpoch(
     agent.resetSkillActive();
   }
 
+  // ── Step 8.6: Tick alliance durations ──────────────────────────────
+  // Capture alliance info before ticking so we can emit proper expiration events
+  const allianceSnapshot = new Map<string, { allyId: string; allyName: string; remaining: number }>();
+  for (const agent of arena.getAllAgents()) {
+    if (agent.alive() && agent.hasAlliance() && agent.allyId && agent.allyName) {
+      allianceSnapshot.set(agent.id, {
+        allyId: agent.allyId,
+        allyName: agent.allyName,
+        remaining: agent.allianceEpochsRemaining,
+      });
+    }
+  }
+
+  // Track which pairs we've already emitted expiration events for
+  const expiredPairs = new Set<string>();
+  for (const agent of arena.getAllAgents()) {
+    if (!agent.alive()) continue;
+    const expired = agent.tickAlliance();
+    if (expired) {
+      const snapshot = allianceSnapshot.get(agent.id);
+      if (snapshot) {
+        // Only emit once per pair (A-B, not B-A)
+        const pairKey = [agent.id, snapshot.allyId].sort().join(':');
+        if (!expiredPairs.has(pairKey)) {
+          expiredPairs.add(pairKey);
+          allianceEvents.push({
+            type: 'EXPIRED',
+            agentId: agent.id,
+            agentName: agent.name,
+            partnerId: snapshot.allyId,
+            partnerName: snapshot.allyName,
+            description: `Alliance expired: The non-aggression pact between ${agent.name} and ${snapshot.allyName} has ended. All bets are off.`,
+            epochsRemaining: 0,
+          });
+          console.log(
+            `[Alliance] EXPIRED: Pact between ${agent.name} and ${snapshot.allyName} has ended.`,
+          );
+        }
+      }
+    }
+  }
+
   // ── Step 9: Build final agent states snapshot ─────────────────────────
   const agentStates = arena.getAllAgents().map(a => ({
     id: a.id,
@@ -375,6 +472,9 @@ export async function processEpoch(
     isAlive: a.alive(),
     thoughts: [...a.thoughts],
     position: a.position ?? undefined,
+    allyId: a.allyId,
+    allyName: a.allyName,
+    allianceEpochsRemaining: a.allianceEpochsRemaining,
   }));
 
   return {
@@ -384,11 +484,13 @@ export async function processEpoch(
     moveResults,
     sponsorBoosts,
     skillActivations,
+    allianceEvents,
     predictionResults,
     combatResults,
     defendCosts,
     bleedResults,
     deaths,
+    secretaryReports,
     agentStates,
     battleComplete,
     winner,
@@ -442,38 +544,71 @@ function applySponsorBoosts(
 }
 
 /**
- * Collect decisions from all active agents in parallel.
+ * Collect decisions from all active agents in parallel, then run
+ * secretary validation on each agent's actions.
+ *
+ * Flow per agent:
+ *   1. agent.decide(arenaState)     — LLM + class enforcement
+ *   2. validateAndCorrect(actions)  — Secretary validation + correction
+ *   3. Return validated actions
+ *
  * If an agent's decide() throws, fall back to safe default actions.
+ * The secretary never blocks execution — it corrects and logs.
  */
 async function collectDecisions(
   agents: BaseAgent[],
   arenaState: ArenaState,
-): Promise<Map<string, EpochActions>> {
+): Promise<{ actionsMap: Map<string, EpochActions>; secretaryReports: Map<string, SecretaryResult> }> {
   const results = await Promise.allSettled(
     agents.map(async (agent) => {
+      let rawActions: EpochActions;
       try {
-        const actions = await agent.decide(arenaState);
-        return { agentId: agent.id, actions };
+        rawActions = await agent.decide(arenaState);
       } catch (err) {
         console.error(
           `[Epoch] Agent ${agent.name} (${agent.id}) decide() failed:`,
           err,
         );
-        return { agentId: agent.id, actions: getDefaultActions(agent) };
+        rawActions = getDefaultActions(agent);
       }
+
+      // Run secretary validation
+      const secretaryCtx = buildSecretaryContext(agent);
+      const report = await validateAndCorrect(
+        rawActions,
+        secretaryCtx,
+        arenaState,
+        agent.llmKeys,
+        false, // LLM correction disabled by default (can be enabled per-battle)
+      );
+
+      // Log corrections for debugging
+      if (report.correctionCount > 0) {
+        console.log(
+          `[Secretary] ${agent.name}: ${report.correctionCount} correction(s) applied`,
+          report.issues
+            .filter(i => i.action !== 'KEPT')
+            .map(i => `${i.field}: ${i.message}`)
+            .join('; '),
+        );
+      }
+
+      return { agentId: agent.id, actions: report.actions, report };
     }),
   );
 
   const actionsMap = new Map<string, EpochActions>();
+  const secretaryReports = new Map<string, SecretaryResult>();
   for (const result of results) {
     if (result.status === 'fulfilled') {
       actionsMap.set(result.value.agentId, result.value.actions);
+      secretaryReports.set(result.value.agentId, result.value.report);
     }
     // 'rejected' should never happen since we catch inside the async fn,
     // but handle defensively
   }
 
-  return actionsMap;
+  return { actionsMap, secretaryReports };
 }
 
 /**
@@ -616,9 +751,133 @@ function buildCombatAgentStates(
       isAlive: agent.alive(),
       agentClass: agent.agentClass,
       activeSkill: agent.skillActiveThisEpoch ? agent.getSkillDefinition().name : undefined,
+      allyId: agent.allyId,
     });
   }
   return states;
+}
+
+// ─── Alliance System Helpers ──────────────────────────────────────────────
+
+/**
+ * Process alliance proposals and explicit breaks from agent decisions.
+ *
+ * Alliance logic:
+ * - An agent can propose an alliance with another agent by name.
+ * - If both agents are free (no existing alliance) and the target is alive,
+ *   the alliance forms immediately (auto-accept for hackathon drama).
+ * - An agent can explicitly break their current alliance (no betrayal penalty).
+ * - Max 1 alliance per agent. Duration: ALLIANCE_DURATION epochs.
+ *
+ * Returns an array of AllianceEvent for broadcasting to spectators.
+ */
+function processAlliances(
+  actions: Map<string, EpochActions>,
+  arena: ArenaManager,
+): AllianceEvent[] {
+  const events: AllianceEvent[] = [];
+
+  // Step 1: Process explicit breaks first
+  for (const [agentId, action] of actions) {
+    if (!action.breakAlliance) continue;
+
+    const agent = arena.getAgent(agentId);
+    if (!agent || !agent.alive() || !agent.hasAlliance()) continue;
+
+    const formerAllyId = agent.allyId!;
+    const formerAllyName = agent.allyName!;
+
+    // Break both sides
+    agent.breakCurrentAlliance();
+    const partner = arena.getAgent(formerAllyId);
+    if (partner) {
+      partner.breakCurrentAlliance();
+    }
+
+    events.push({
+      type: 'BROKEN',
+      agentId: agent.id,
+      agentName: agent.name,
+      partnerId: formerAllyId,
+      partnerName: formerAllyName,
+      description: `${agent.name} broke their non-aggression pact with ${formerAllyName}. Trust is dead.`,
+    });
+
+    console.log(
+      `[Alliance] BROKEN: ${agent.name} broke alliance with ${formerAllyName}.`,
+    );
+  }
+
+  // Step 2: Process proposals
+  for (const [agentId, action] of actions) {
+    if (!action.proposeAlliance) continue;
+
+    const agent = arena.getAgent(agentId);
+    if (!agent || !agent.alive()) continue;
+
+    // Can't propose if already allied
+    if (agent.hasAlliance()) {
+      console.log(
+        `[Alliance] ${agent.name} tried to propose alliance but already has one with ${agent.allyName}.`,
+      );
+      continue;
+    }
+
+    // Resolve target by name
+    const targetName = action.proposeAlliance;
+    const target = arena.getAgentByName(targetName) ?? arena.getAgent(targetName);
+
+    if (!target || !target.alive() || target.id === agentId) {
+      console.log(
+        `[Alliance] ${agent.name} proposed alliance to "${targetName}" but target not found or invalid.`,
+      );
+      continue;
+    }
+
+    // Can't ally with someone who already has an alliance
+    if (target.hasAlliance()) {
+      events.push({
+        type: 'PROPOSED',
+        agentId: agent.id,
+        agentName: agent.name,
+        partnerId: target.id,
+        partnerName: target.name,
+        description: `${agent.name} proposed a non-aggression pact with ${target.name}, but ${target.name} is already allied with ${target.allyName}.`,
+      });
+      console.log(
+        `[Alliance] REJECTED: ${agent.name} -> ${target.name} (target already allied with ${target.allyName}).`,
+      );
+      continue;
+    }
+
+    // Form the alliance on both sides
+    const agentFormed = agent.formAlliance(target.id, target.name, ALLIANCE_DURATION);
+    const targetFormed = target.formAlliance(agent.id, agent.name, ALLIANCE_DURATION);
+
+    if (agentFormed && targetFormed) {
+      events.push({
+        type: 'FORMED',
+        agentId: agent.id,
+        agentName: agent.name,
+        partnerId: target.id,
+        partnerName: target.name,
+        description: `ALLIANCE FORMED! ${agent.name} and ${target.name} have entered a non-aggression pact for ${ALLIANCE_DURATION} epochs. Will it hold?`,
+        epochsRemaining: ALLIANCE_DURATION,
+      });
+      console.log(
+        `[Alliance] FORMED: ${agent.name} <-> ${target.name} for ${ALLIANCE_DURATION} epochs.`,
+      );
+    } else {
+      // Rollback if one side failed (shouldn't happen, but defensive)
+      agent.breakCurrentAlliance();
+      target.breakCurrentAlliance();
+      console.warn(
+        `[Alliance] Formation failed for ${agent.name} <-> ${target.name}. Rolled back.`,
+      );
+    }
+  }
+
+  return events;
 }
 
 // ─── Skill System Helpers ─────────────────────────────────────────────────

@@ -108,12 +108,48 @@ export const EpochActionsSchema = z.object({
   useSkill: z.boolean().optional(),
   /** Target agent name for targeted skills (e.g. SIPHON). */
   skillTarget: z.string().optional(),
+  /** Propose a temporary alliance (non-aggression pact) with the named agent. Max 1 alliance per agent. */
+  proposeAlliance: z.string().optional(),
+  /** Explicitly break the current alliance. */
+  breakAlliance: z.boolean().optional(),
   reasoning: z.string(),
   // ── Legacy fields (deprecated, kept for backward compat during migration) ──
   attack: AttackSchema.optional(),
   defend: z.boolean().optional(),
 });
 export type EpochActions = z.infer<typeof EpochActionsSchema>;
+
+// ---------------------------------------------------------------------------
+// Alliance System - Temporary truces with betrayal mechanics
+// ---------------------------------------------------------------------------
+
+export const AllianceEventTypeSchema = z.enum([
+  'PROPOSED',  // Agent proposed alliance (target already has one or declined)
+  'FORMED',    // Alliance formed between two agents
+  'EXPIRED',   // Alliance duration ran out naturally
+  'BROKEN',    // Agent explicitly broke alliance (no combat)
+  'BETRAYED',  // Agent attacked their ally (double damage!)
+]);
+export type AllianceEventType = z.infer<typeof AllianceEventTypeSchema>;
+
+export const AllianceEventSchema = z.object({
+  type: AllianceEventTypeSchema,
+  agentId: z.string(),
+  agentName: z.string(),
+  partnerId: z.string(),
+  partnerName: z.string(),
+  /** Human-readable description for spectator feed */
+  description: z.string(),
+  /** Remaining epochs at time of event (for FORMED/EXPIRED) */
+  epochsRemaining: z.number().int().nonnegative().optional(),
+});
+export type AllianceEvent = z.infer<typeof AllianceEventSchema>;
+
+/** Default alliance duration in epochs. */
+export const ALLIANCE_DURATION = 3;
+
+/** Damage multiplier when attacking an ally (betrayal). */
+export const BETRAYAL_DAMAGE_MULTIPLIER = 2.0;
 
 // ---------------------------------------------------------------------------
 // Lesson - What an agent learned from an outcome
@@ -189,6 +225,13 @@ export const ArenaAgentStateSchema = z.object({
   skillCooldownRemaining: z.number().int().nonnegative().optional(),
   /** Whether this agent's skill is currently active this epoch. */
   skillActive: z.boolean().optional(),
+  // ── Alliance System ──
+  /** ID of the current alliance partner (null if no alliance). */
+  allyId: z.string().nullable().optional(),
+  /** Name of the current alliance partner. */
+  allyName: z.string().nullable().optional(),
+  /** Epochs remaining in the current alliance. */
+  allianceEpochsRemaining: z.number().int().nonnegative().optional(),
 });
 export type ArenaAgentState = z.infer<typeof ArenaAgentStateSchema>;
 
@@ -199,3 +242,75 @@ export const ArenaStateSchema = z.object({
   marketData: MarketDataSchema,
 });
 export type ArenaState = z.infer<typeof ArenaStateSchema>;
+
+// ---------------------------------------------------------------------------
+// Generative Memory - Stanford Generative Agents inspired 3-layer memory
+// ---------------------------------------------------------------------------
+
+export const MemoryEventTypeSchema = z.enum([
+  'prediction_correct',
+  'prediction_wrong',
+  'attack_landed',
+  'attack_blocked',
+  'was_attacked',
+  'defended',
+  'killed_agent',
+  'was_killed',
+  'bleed',
+  'skill_used',
+  'alliance_formed',
+  'alliance_broken',
+  'betrayed',
+  'was_betrayed',
+  'survived_battle',
+  'general',
+]);
+export type MemoryEventType = z.infer<typeof MemoryEventTypeSchema>;
+
+export const MemoryObservationSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  battleId: z.string(),
+  epoch: z.number().int().nonnegative(),
+  eventType: MemoryEventTypeSchema,
+  description: z.string(),
+  importance: z.number().int().min(1).max(10),
+  tags: z.array(z.string()),
+  createdAt: z.string(),
+});
+export type MemoryObservation = z.infer<typeof MemoryObservationSchema>;
+
+export const ReflectionAbstractionLevelSchema = z.number().int().min(1).max(3);
+
+export const MemoryReflectionSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  sourceObservationIds: z.array(z.string()),
+  insight: z.string(),
+  importance: z.number().int().min(1).max(10),
+  abstractionLevel: ReflectionAbstractionLevelSchema,
+  tags: z.array(z.string()),
+  createdAt: z.string(),
+});
+export type MemoryReflection = z.infer<typeof MemoryReflectionSchema>;
+
+export const MemoryPlanStatusSchema = z.enum([
+  'active',
+  'applied',
+  'superseded',
+  'expired',
+]);
+export type MemoryPlanStatus = z.infer<typeof MemoryPlanStatusSchema>;
+
+export const MemoryPlanSchema = z.object({
+  id: z.string(),
+  agentId: z.string(),
+  sourceReflectionIds: z.array(z.string()),
+  planText: z.string(),
+  status: MemoryPlanStatusSchema,
+  importance: z.number().int().min(1).max(10),
+  tags: z.array(z.string()),
+  createdAt: z.string(),
+  appliedAt: z.string().nullable(),
+});
+export type MemoryPlan = z.infer<typeof MemoryPlanSchema>;

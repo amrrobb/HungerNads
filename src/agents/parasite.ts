@@ -115,7 +115,8 @@ export class ParasiteAgent extends BaseAgent {
         : '\nNo scavenge targets available (no agents below 15% HP).';
 
     const skillContext = this.getSkillPromptContext();
-    const parasitePromptSuffix = `${hostContext}${scavengeContext}\n${skillContext}`;
+    const allianceContext = this.getAlliancePromptContext();
+    const parasitePromptSuffix = `${hostContext}${scavengeContext}\n${skillContext}\n${allianceContext}`;
 
     try {
       const result = await agentDecision(

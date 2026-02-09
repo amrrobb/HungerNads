@@ -24,3 +24,17 @@ export type { BattleHistory, AgentInfo, LLMCall } from './lessons';
 
 // Profile generation
 export { AgentProfileBuilder, getAgentLeaderboard } from './profiles';
+
+// Generative Memory (Stanford Generative Agents inspired)
+export { GenerativeMemory, ObservationFactory, extractKeywords } from './generative-memory';
+export type { ScoredMemory, RetrievalQuery, ObservationInput } from './generative-memory';
+export type { LLMCall as GenerativeMemoryLLMCall } from './generative-memory';
+
+// Re-export generative memory schemas
+export type {
+  MemoryObservation,
+  MemoryReflection,
+  MemoryPlan,
+  MemoryEventType,
+  MemoryPlanStatus,
+} from '../agents/schemas';

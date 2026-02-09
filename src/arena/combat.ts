@@ -24,6 +24,7 @@
  */
 
 import type { EpochActions, CombatStance, AgentClass, SkillName } from '../agents/schemas';
+import { BETRAYAL_DAMAGE_MULTIPLIER } from '../agents/schemas';
 import type { SponsorEffect } from '../betting/sponsorship';
 
 // ─── Types ───────────────────────────────────────────────────────────
@@ -49,6 +50,8 @@ export interface CombatResult {
   hpChangeAttacker: number;
   /** HP change for the target (negative = damage taken, positive = healed) */
   hpChangeTarget: number;
+  /** True if the attacker attacked their ally (betrayal — double damage applied). */
+  betrayal: boolean;
   // ── Backward-compatible fields for death.ts / lessons.ts migration ──
   /** @deprecated Use hpChangeAttacker/hpChangeTarget. Kept for death.ts compat. */
   attackStake: number;
@@ -79,6 +82,8 @@ export interface CombatAgentState {
   agentClass?: AgentClass;
   /** Active skill for this epoch (set by epoch processor after skill activation). */
   activeSkill?: SkillName;
+  /** Current ally ID for betrayal detection. Null if no alliance. */
+  allyId?: string | null;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -229,6 +234,9 @@ export function resolveCombat(
     // Get sponsor attack boost for the aggressor (if any)
     const aggressorSponsorBoost = sponsorEffects?.get(aggressorId)?.attackBoost ?? 0;
 
+    // Check for betrayal: is the aggressor attacking their ally?
+    const isBetrayal = aggressor.allyId === targetId;
+
     // Resolve the triangle
     const result = resolveTriangle(
       aggressorId,
@@ -241,6 +249,7 @@ export function resolveCombat(
       aggressorSponsorBoost,
       aggressor.activeSkill,
       target.activeSkill,
+      isBetrayal,
     );
 
     combatResults.push(result);
@@ -274,6 +283,7 @@ function getEffectiveStance(action: EpochActions): CombatStance {
  *   Stacks additively with the class modifier.
  * @param aggressorSkill Active skill for the aggressor this epoch (e.g. BERSERK).
  * @param targetSkill Active skill for the target this epoch (e.g. FORTIFY).
+ * @param isBetrayal True if the aggressor is attacking their ally (2x damage multiplier).
  */
 function resolveTriangle(
   aggressorId: string,
@@ -286,6 +296,7 @@ function resolveTriangle(
   sponsorAttackBoost: number = 0,
   aggressorSkill?: SkillName,
   targetSkill?: SkillName,
+  isBetrayal: boolean = false,
 ): CombatResult {
   const baseAggressorMod = getClassModifier(aggressorClass, aggressorStance);
   // Sponsor attack boost stacks additively with class modifier for ATTACK stance
@@ -398,6 +409,15 @@ function resolveTriangle(
     hpChangeAttacker = 0;
   }
 
+  // ── BETRAYAL: attacking your ally doubles all damage dealt to the target ──
+  if (isBetrayal && hpChangeTarget < 0) {
+    hpChangeTarget = Math.round(hpChangeTarget * BETRAYAL_DAMAGE_MULTIPLIER);
+  }
+  // If aggressor steals HP from ally (positive hpChangeAttacker), also double the steal
+  if (isBetrayal && hpChangeAttacker > 0) {
+    hpChangeAttacker = Math.round(hpChangeAttacker * BETRAYAL_DAMAGE_MULTIPLIER);
+  }
+
   // Build backward-compatible fields
   const defended = targetStance === 'DEFEND' && outcome === 'ABSORB';
   const hpTransfer = hpChangeAttacker; // Legacy: from attacker's perspective
@@ -411,6 +431,7 @@ function resolveTriangle(
     stake,
     hpChangeAttacker,
     hpChangeTarget,
+    betrayal: isBetrayal,
     attackStake: stake,
     defended,
     hpTransfer,

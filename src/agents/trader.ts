@@ -55,12 +55,13 @@ export class TraderAgent extends BaseAgent {
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
 
     const skillContext = this.getSkillPromptContext();
+    const allianceContext = this.getAlliancePromptContext();
 
     try {
       const result = await agentDecision(
         this.name,
         this.agentClass,
-        this.getPersonality() + '\n' + skillContext,
+        this.getPersonality() + '\n' + skillContext + '\n' + allianceContext,
         this.hp,
         {
           eth: arenaState.marketData.prices.ETH ?? 0,

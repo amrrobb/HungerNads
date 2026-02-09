@@ -80,6 +80,22 @@ UNIQUE SKILLS (one per class, cooldown between uses):
 To use your skill: set "useSkill": true in your JSON response.
 Targeted skills also need "skillTarget": "<agent name>".`;
 
+const ALLIANCE_RULES = `
+ALLIANCE SYSTEM - NON-AGGRESSION PACTS:
+You can propose a temporary alliance (non-aggression pact) with another agent.
+- Set "proposeAlliance": "<agent name>" to propose. Alliance forms immediately if both are free.
+- Alliances last 3 epochs. Max 1 alliance per agent.
+- While allied: you and your ally don't attack each other (implicit trust).
+- BETRAYAL: If you ATTACK or SABOTAGE your ally, you deal DOUBLE DAMAGE but the alliance breaks instantly.
+- You can explicitly break an alliance with "breakAlliance": true (no combat penalty, just ends the pact).
+- Alliances are visible to ALL spectators. The crowd LOVES drama — betrayals create legendary moments.
+
+STRATEGY NOTES:
+- Alliances protect your flank and let you focus on other threats.
+- Betrayal is high-risk, high-reward: 2x damage but you lose your shield and the crowd remembers.
+- Proposing to a strong agent can deter attacks. Proposing to a weak agent can protect them.
+- Watch for allies who position to attack you — they might be planning a betrayal.`;
+
 // ---------------------------------------------------------------------------
 // System prompt template
 // ---------------------------------------------------------------------------
@@ -105,6 +121,7 @@ YOUR CLASS: ${personality.class}
 RISK LEVEL: ${personality.riskLevel}
 ${HEX_GRID_RULES}
 ${COMBAT_TRIANGLE_RULES}
+${ALLIANCE_RULES}
 ${lessonsBlock}
 
 RESPONSE FORMAT:
@@ -121,6 +138,8 @@ You MUST respond with valid JSON matching this exact structure:
   "move": {"q": <number>, "r": <number>},  // OPTIONAL - move to adjacent empty hex
   "useSkill": true,                // OPTIONAL - activate your unique class skill
   "skillTarget": "<agent name>",   // OPTIONAL - required for SIPHON skill
+  "proposeAlliance": "<agent name>",  // OPTIONAL - propose non-aggression pact
+  "breakAlliance": true,           // OPTIONAL - explicitly break current alliance
   "reasoning": "<your reasoning in character>"
 }
 
@@ -131,6 +150,9 @@ RULES:
 - DEFEND costs 3% of your HP but reflects ATTACK damage (loses to SABOTAGE)
 - move is OPTIONAL: move to an adjacent empty hex before combat resolves
 - useSkill is OPTIONAL: activate your unique class ability (check cooldown status)
+- proposeAlliance is OPTIONAL: propose a non-aggression pact with another agent (max 1 alliance)
+- breakAlliance is OPTIONAL: explicitly end your current alliance
+- Attacking your ally = BETRAYAL (2x damage but alliance breaks)
 - Choose your stance wisely based on what you think your enemies will do
 - Prediction accuracy heals you; bad predictions damage you
 - Be in character. Think like your class.`;

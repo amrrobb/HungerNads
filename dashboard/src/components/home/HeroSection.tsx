@@ -4,14 +4,14 @@ interface HeroSectionProps {
 
 export default function HeroSection({ activeBattleCount }: HeroSectionProps) {
   return (
-    <section className="relative flex flex-col items-center py-16 text-center">
+    <section className="relative flex flex-col items-center py-10 text-center sm:py-16">
       {/* Glow effect behind title */}
-      <div className="absolute top-8 h-32 w-96 rounded-full bg-gold/20 blur-3xl" />
+      <div className="absolute top-8 h-32 w-64 rounded-full bg-gold/20 blur-3xl sm:w-96" />
 
-      <h1 className="font-cinzel relative mb-3 text-5xl font-black uppercase tracking-widest text-gold drop-shadow-[0_0_30px_rgba(245,158,11,0.5)] sm:text-6xl">
+      <h1 className="font-cinzel relative mb-3 text-3xl font-black uppercase tracking-widest text-gold drop-shadow-[0_0_30px_rgba(245,158,11,0.5)] sm:text-5xl lg:text-6xl">
         The Colosseum Awaits
       </h1>
-      <p className="mb-6 text-lg text-gray-500">
+      <p className="mb-6 text-sm text-gray-500 sm:text-lg">
         May the nads be ever in your favor.
       </p>
 

@@ -78,8 +78,12 @@ export default function ActionFeed({ entries }: ActionFeedProps) {
                       : ""
               }`}
             >
-              {/* Timestamp */}
-              <span className="mt-px shrink-0 text-[10px] text-gray-700">
+              {/* Timestamp -- suppressHydrationWarning because locale-formatted
+                  times can differ between server and client renders */}
+              <span
+                className="mt-px shrink-0 text-[10px] text-gray-700"
+                suppressHydrationWarning
+              >
                 {formatTime(entry.timestamp)}
               </span>
 

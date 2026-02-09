@@ -8,11 +8,28 @@
     color: #d4c5a0;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
       "Liberation Mono", "Courier New", monospace;
+    /* Prevent iOS text size inflation */
+    -webkit-text-size-adjust: 100%;
   }
 
   ::selection {
     background-color: rgba(245, 158, 11, 0.3);
     color: #ffffff;
+  }
+
+  /* Faster taps on all interactive elements (remove 300ms delay) */
+  button,
+  a,
+  select,
+  input,
+  textarea,
+  [role="button"] {
+    touch-action: manipulation;
+  }
+
+  /* Prevent pull-to-refresh on overscrollable areas */
+  .overscroll-none {
+    overscroll-behavior: none;
   }
 }
 

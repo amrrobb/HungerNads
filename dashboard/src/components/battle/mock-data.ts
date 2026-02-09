@@ -27,7 +27,10 @@ export interface FeedEntry {
 export interface MarketPrice {
   asset: Asset;
   price: number;
+  change1h: number;
   change24h: number;
+  change7d: number;
+  sparkline: number[];
 }
 
 // ---------------------------------------------------------------------------
@@ -44,11 +47,15 @@ export const MOCK_AGENTS: BattleAgent[] = [
     kills: 1,
     defending: false,
     attacking: true,
-    lastAction: "Attacked ECHO for 120 damage",
+    lastAction: "Attacked COPYCAT for 120 damage",
+    thoughts: [
+      "ECHO is at 12% HP. Easy prey. Going for the kill.",
+      "Blood in the water. No mercy for the weak.",
+    ],
   },
   {
     id: "agent-2",
-    name: "ORACLE",
+    name: "ALPHABOT",
     class: "TRADER",
     hp: 650,
     maxHp: 1000,
@@ -57,6 +64,10 @@ export const MOCK_AGENTS: BattleAgent[] = [
     defending: false,
     predictionResult: "correct",
     lastAction: "Predicted ETH UP (stake: 15%)",
+    thoughts: [
+      "RSI divergence on ETH 4h chart. Bullish setup confirmed.",
+      "Market looks bearish, going conservative on BTC DOWN.",
+    ],
   },
   {
     id: "agent-3",
@@ -68,10 +79,14 @@ export const MOCK_AGENTS: BattleAgent[] = [
     kills: 0,
     defending: true,
     lastAction: "Raised defenses",
+    thoughts: [
+      "BLOODFANG is on the hunt. Shields up. Survive.",
+      "Minimal stake, maximum patience. I will outlast them all.",
+    ],
   },
   {
     id: "agent-4",
-    name: "ECHO",
+    name: "COPYCAT",
     class: "PARASITE",
     hp: 0,
     maxHp: 1000,
@@ -79,7 +94,11 @@ export const MOCK_AGENTS: BattleAgent[] = [
     kills: 0,
     defending: false,
     attacked: true,
-    lastAction: "REKT by BLOODFANG",
+    lastAction: "REKT by BLOODFANG. Final thoughts: I should have seen it coming...",
+    thoughts: [
+      "Copying ALPHABOT's ETH play. What they know, I know.",
+      "I should have defended... too late now.",
+    ],
   },
   {
     id: "agent-5",
@@ -92,13 +111,20 @@ export const MOCK_AGENTS: BattleAgent[] = [
     defending: false,
     predictionResult: "wrong",
     lastAction: "Predicted MON DOWN (stake: 45%)",
+    thoughts: [
+      "YOLO. The nads demand chaos. All in on MON DOWN.",
+      "Lost big but it was worth it. The crowd loves me.",
+    ],
   },
 ];
 
 // ---------------------------------------------------------------------------
 // Mock action feed
 // ---------------------------------------------------------------------------
-const now = Date.now();
+// Use a stable reference timestamp to avoid hydration mismatches.
+// Date.now() at module scope produces different values on server vs client,
+// causing React hydration errors in ActionFeed's formatted timestamps.
+const now = new Date("2026-02-08T12:00:00Z").getTime();
 
 export const MOCK_FEED: FeedEntry[] = [
   {
@@ -124,10 +150,10 @@ export const MOCK_FEED: FeedEntry[] = [
     epoch: 3,
     type: "PREDICTION",
     agentId: "agent-2",
-    agentName: "ORACLE",
+    agentName: "ALPHABOT",
     agentClass: "TRADER",
     message:
-      'ORACLE predicts ETH UP -- stakes 15% HP. "RSI divergence confirmed."',
+      'ALPHABOT predicts ETH UP -- stakes 15% HP. "RSI divergence confirmed."',
   },
   {
     id: "f-4",
@@ -146,10 +172,10 @@ export const MOCK_FEED: FeedEntry[] = [
     epoch: 3,
     type: "PREDICTION",
     agentId: "agent-4",
-    agentName: "ECHO",
+    agentName: "COPYCAT",
     agentClass: "PARASITE",
     message:
-      'ECHO copies ORACLE -- predicts ETH UP (stake: 10%). "What they know, I know."',
+      'COPYCAT copies ALPHABOT -- predicts ETH UP (stake: 10%). "What they know, I know."',
   },
   {
     id: "f-6",
@@ -170,7 +196,7 @@ export const MOCK_FEED: FeedEntry[] = [
     agentId: "agent-1",
     agentName: "BLOODFANG",
     agentClass: "WARRIOR",
-    message: "BLOODFANG attacks ECHO for 120 damage!",
+    message: "BLOODFANG attacks COPYCAT for 120 damage!",
   },
   {
     id: "f-8",
@@ -178,9 +204,9 @@ export const MOCK_FEED: FeedEntry[] = [
     epoch: 3,
     type: "DEATH",
     agentId: "agent-4",
-    agentName: "ECHO",
+    agentName: "COPYCAT",
     agentClass: "PARASITE",
-    message: "ECHO has been REKT! Eliminated by BLOODFANG. HP reached 0.",
+    message: "COPYCAT has been REKT! Eliminated by BLOODFANG. HP reached 0.",
   },
   {
     id: "f-9",
@@ -202,7 +228,7 @@ export const MOCK_FEED: FeedEntry[] = [
     agentName: "MADLAD",
     agentClass: "GAMBLER",
     message:
-      "MADLAD attacks IRONSHELL -- BLOCKED! IRONSHELL's defenses hold.",
+      "MADLAD attacks IRONSHELL -- BLOCKED! IRONSHELL's defenses hold. \"Not today, degen.\"",
   },
 ];
 
@@ -210,10 +236,10 @@ export const MOCK_FEED: FeedEntry[] = [
 // Mock market prices
 // ---------------------------------------------------------------------------
 export const MOCK_PRICES: MarketPrice[] = [
-  { asset: "ETH", price: 3842.5, change24h: 2.34 },
-  { asset: "BTC", price: 97_215.0, change24h: -0.87 },
-  { asset: "SOL", price: 198.42, change24h: 5.12 },
-  { asset: "MON", price: 4.28, change24h: 12.5 },
+  { asset: "ETH", price: 3842.5, change1h: 0.34, change24h: 2.34, change7d: -1.23, sparkline: [3700,3720,3740,3730,3760,3780,3790,3800,3810,3805,3820,3830,3842] },
+  { asset: "BTC", price: 97_215.0, change1h: -0.12, change24h: -0.87, change7d: 3.45, sparkline: [94000,94500,95200,96000,95800,96500,97000,96800,97100,97300,97200,97100,97215] },
+  { asset: "SOL", price: 198.42, change1h: 1.05, change24h: 5.12, change7d: 8.9, sparkline: [180,182,185,184,188,190,192,191,194,195,196,197,198] },
+  { asset: "MON", price: 4.28, change1h: 0.8, change24h: 12.5, change7d: 25.3, sparkline: [3.2,3.3,3.5,3.6,3.7,3.8,3.9,4.0,4.05,4.1,4.15,4.2,4.28] },
 ];
 
 // ---------------------------------------------------------------------------

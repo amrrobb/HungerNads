@@ -35,6 +35,48 @@ function HPBar({ hp, maxHp }: { hp: number; maxHp: number }) {
 }
 
 /**
+ * Displays the agent's latest LLM reasoning snippet as a "thought bubble".
+ * Shows the most recent thought with a subtle typing/fade-in aesthetic.
+ * When no thoughts exist, renders nothing (falls through to lastAction).
+ */
+function ThoughtFeed({ thoughts, isDead }: { thoughts?: string[]; isDead: boolean }) {
+  if (!thoughts || thoughts.length === 0) return null;
+
+  // Show only the latest thought
+  const latestThought = thoughts[thoughts.length - 1];
+
+  return (
+    <div
+      className={`mt-2 rounded border px-2 py-1.5 ${
+        isDead
+          ? "border-gray-800 bg-gray-900/30"
+          : "border-colosseum-surface-light bg-colosseum-bg/50"
+      }`}
+    >
+      <div className="mb-0.5 flex items-center gap-1">
+        <span className="text-[9px] font-semibold uppercase tracking-widest text-gray-600">
+          Thinking
+        </span>
+        {!isDead && (
+          <span className="inline-flex gap-0.5">
+            <span className="h-1 w-1 rounded-full bg-gray-600 animate-pulse" />
+            <span className="h-1 w-1 rounded-full bg-gray-600 animate-pulse [animation-delay:150ms]" />
+            <span className="h-1 w-1 rounded-full bg-gray-600 animate-pulse [animation-delay:300ms]" />
+          </span>
+        )}
+      </div>
+      <p
+        className={`text-[11px] leading-snug italic ${
+          isDead ? "text-gray-700" : "text-gray-400"
+        }`}
+      >
+        &ldquo;{latestThought}&rdquo;
+      </p>
+    </div>
+  );
+}
+
+/**
  * Builds the composite CSS class string for the card based on all possible
  * animation states.  Priority order (highest wins):
  *   winner > dead > attacking > attacked > defending > prediction > idle
@@ -152,8 +194,11 @@ export default function AgentCard({ agent, highlighted }: AgentCardProps) {
         <HPBar hp={agent.hp} maxHp={agent.maxHp} />
       </div>
 
-      {/* Last action */}
-      {agent.lastAction && (
+      {/* Thought feed - shows the agent's latest LLM reasoning */}
+      <ThoughtFeed thoughts={agent.thoughts} isDead={isDead} />
+
+      {/* Last action (fallback when no thoughts available) */}
+      {(!agent.thoughts || agent.thoughts.length === 0) && agent.lastAction && (
         <p
           className={`mt-2 truncate text-[11px] italic ${isDead ? "text-gray-700" : "text-gray-500"}`}
         >

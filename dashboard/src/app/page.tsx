@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 import type { AgentState, AgentClass } from '@/types';
 import HeroSection from '@/components/home/HeroSection';
 import BattleCard from '@/components/home/BattleCard';
@@ -352,7 +353,7 @@ export default function HomePage() {
           <button
             onClick={handleStartBattle}
             disabled={startingBattle}
-            className="rounded-lg border border-gold/40 bg-gold/10 px-8 py-3 text-sm font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60"
+            className="rounded-lg border border-gold/40 bg-gold/10 px-8 py-4 text-sm font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60 sm:py-3"
           >
             {startingBattle ? 'Summoning Gladiators...' : 'Start New Battle'}
           </button>
@@ -412,6 +413,13 @@ export default function HomePage() {
           ) : (
             <BettorRank bettors={topBettors} />
           )}
+
+          <Link
+            href="/leaderboard"
+            className="block text-center text-xs font-bold uppercase tracking-wider text-gray-600 transition-colors hover:text-gold"
+          >
+            View Full Leaderboard
+          </Link>
         </div>
       </div>
 

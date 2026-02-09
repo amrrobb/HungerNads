@@ -150,6 +150,25 @@ export interface CurveUpdateEvent {
   };
 }
 
+export interface SponsorBoostEvent {
+  type: 'sponsor_boost';
+  data: {
+    agentId: string;
+    tier: string;
+    hpBoost: number;
+    actualBoost: number;
+    hpBefore: number;
+    hpAfter: number;
+    freeDefend: boolean;
+    attackBoost: number;
+    message: string;
+    /** Sponsor wallet address (added by feed processor). */
+    sponsorAddress?: string;
+    /** Token amount burned. */
+    amount?: number;
+  };
+}
+
 export type BattleEvent =
   | EpochStartEvent
   | AgentActionEvent
@@ -161,7 +180,8 @@ export type BattleEvent =
   | OddsUpdateEvent
   | TokenBuyEvent
   | TokenSellEvent
-  | CurveUpdateEvent;
+  | CurveUpdateEvent
+  | SponsorBoostEvent;
 
 export type BattleEventHandler = (event: BattleEvent) => void;
 export type ConnectionHandler = (connected: boolean) => void;

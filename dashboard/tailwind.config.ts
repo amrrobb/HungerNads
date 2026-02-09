@@ -152,6 +152,37 @@ const config: Config = {
           "0%": { opacity: "0", transform: "translateX(-8px)" },
           "100%": { opacity: "1", transform: "translateX(0)" },
         },
+        /* Sponsor parachute drop: gold glow slide-in */
+        "sponsor-enter": {
+          "0%": {
+            opacity: "0",
+            transform: "translateY(-12px) scale(0.95)",
+            boxShadow: "0 0 0 rgba(245,158,11,0)",
+          },
+          "40%": {
+            opacity: "1",
+            transform: "translateY(0) scale(1)",
+            boxShadow:
+              "0 0 16px rgba(245,158,11,0.4), 0 0 32px rgba(245,158,11,0.15)",
+          },
+          "100%": {
+            opacity: "1",
+            transform: "translateY(0) scale(1)",
+            boxShadow: "0 0 0 rgba(245,158,11,0)",
+          },
+        },
+        /* Price flash green (price went up) */
+        "price-flash-up": {
+          "0%": { backgroundColor: "rgba(34,197,94,0)" },
+          "15%": { backgroundColor: "rgba(34,197,94,0.25)" },
+          "100%": { backgroundColor: "rgba(34,197,94,0)" },
+        },
+        /* Price flash red (price went down) */
+        "price-flash-down": {
+          "0%": { backgroundColor: "rgba(220,38,38,0)" },
+          "15%": { backgroundColor: "rgba(220,38,38,0.25)" },
+          "100%": { backgroundColor: "rgba(220,38,38,0)" },
+        },
       },
       animation: {
         "rekt-glow": "rekt-glow 2s ease-in-out infinite",
@@ -163,6 +194,9 @@ const config: Config = {
         "winner-glow": "winner-glow 1.5s ease-in-out infinite",
         "countdown-urgent": "countdown-urgent 1s ease-in-out infinite",
         "feed-enter": "feed-enter 0.3s ease-out forwards",
+        "sponsor-enter": "sponsor-enter 0.6s ease-out forwards",
+        "price-flash-up": "price-flash-up 0.8s ease-out forwards",
+        "price-flash-down": "price-flash-down 0.8s ease-out forwards",
       },
     },
   },

@@ -1,35 +1,22 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useEffect, useCallback } from "react";
 import type { AgentState } from "@/types";
-import { CLASS_CONFIG } from "@/components/battle/mock-data";
+import SponsorTierSelector from "./SponsorTierSelector";
 
 interface SponsorModalProps {
   open: boolean;
   onClose: () => void;
   agents: AgentState[];
+  battleId: string;
 }
 
-export default function SponsorModal({ open, onClose, agents }: SponsorModalProps) {
-  const [selectedAgentId, setSelectedAgentId] = useState("");
-  const [amount, setAmount] = useState("");
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const aliveAgents = agents.filter((a) => a.alive);
-
-  // Reset form when modal opens
-  useEffect(() => {
-    if (open) {
-      setSelectedAgentId("");
-      setAmount("");
-      setMessage("");
-      setError("");
-      setSubmitting(false);
-    }
-  }, [open]);
-
+export default function SponsorModal({
+  open,
+  onClose,
+  agents,
+  battleId,
+}: SponsorModalProps) {
   // Close on Escape key
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -43,50 +30,25 @@ export default function SponsorModal({ open, onClose, agents }: SponsorModalProp
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
-  function validate(): boolean {
-    if (!selectedAgentId) {
-      setError("Select a gladiator to sponsor");
-      return false;
-    }
-    const parsed = parseFloat(amount);
-    if (isNaN(parsed) || parsed <= 0) {
-      setError("Enter a valid amount");
-      return false;
-    }
-    if (parsed < 1) {
-      setError("Minimum sponsorship is 1 $HNADS");
-      return false;
-    }
-    setError("");
-    return true;
-  }
-
-  function handleSend() {
-    if (!validate()) return;
-    setSubmitting(true);
-    // Mock submission
-    setTimeout(() => {
-      setSubmitting(false);
-      onClose();
-    }, 600);
-  }
-
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black/80 backdrop-blur-sm"
         onClick={onClose}
       />
 
-      {/* Modal */}
-      <div className="relative w-full max-w-md rounded-lg border border-colosseum-surface-light bg-colosseum-surface p-6 shadow-2xl">
+      {/* Modal - slides up as bottom sheet on mobile, centered on desktop */}
+      <div className="relative max-h-[90vh] w-full overflow-y-auto rounded-t-2xl border border-colosseum-surface-light bg-colosseum-surface p-5 shadow-2xl scrollbar-thin sm:max-w-md sm:rounded-lg sm:p-6">
+        {/* Drag handle on mobile */}
+        <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-colosseum-surface-light sm:hidden" />
+
         {/* Close button */}
         <button
           onClick={onClose}
-          className="absolute right-3 top-3 text-gray-600 transition-colors hover:text-white"
+          className="absolute right-3 top-3 p-1 text-gray-600 transition-colors hover:text-white sm:p-0"
           aria-label="Close"
         >
           <svg
@@ -110,85 +72,17 @@ export default function SponsorModal({ open, onClose, agents }: SponsorModalProp
           SPONSOR A GLADIATOR
         </h2>
         <p className="mb-5 text-xs text-gray-500">
-          Send support to keep your champion alive. The crowd remembers.
+          Send a parachute drop to keep your champion alive. All tokens are
+          burned -- the crowd&apos;s sacrifice is eternal.
         </p>
 
-        {/* Agent select */}
-        <label className="mb-1 block text-[10px] uppercase tracking-wider text-gray-600">
-          Gladiator
-        </label>
-        <select
-          value={selectedAgentId}
-          onChange={(e) => {
-            setSelectedAgentId(e.target.value);
-            setError("");
-          }}
-          className="mb-4 w-full rounded border border-colosseum-surface-light bg-colosseum-bg px-3 py-2 text-sm text-white outline-none focus:border-gold transition-colors"
-        >
-          <option value="">-- select gladiator --</option>
-          {aliveAgents.map((agent) => (
-            <option key={agent.id} value={agent.id}>
-              {CLASS_CONFIG[agent.class].emoji} {agent.name} ({agent.class})
-            </option>
-          ))}
-        </select>
-
-        {/* Amount */}
-        <label className="mb-1 block text-[10px] uppercase tracking-wider text-gray-600">
-          Amount ($HNADS)
-        </label>
-        <div className="relative mb-4">
-          <input
-            type="number"
-            min="1"
-            step="1"
-            placeholder="0"
-            value={amount}
-            onChange={(e) => {
-              setAmount(e.target.value);
-              setError("");
-            }}
-            className="w-full rounded border border-colosseum-surface-light bg-colosseum-bg px-3 py-2 pr-16 text-sm text-white outline-none focus:border-gold transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-          />
-          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold uppercase tracking-wider text-gray-600">
-            $HNADS
-          </span>
-        </div>
-
-        {/* Message */}
-        <label className="mb-1 block text-[10px] uppercase tracking-wider text-gray-600">
-          Message (optional)
-        </label>
-        <textarea
-          rows={2}
-          maxLength={120}
-          placeholder="From your loyal fan..."
-          value={message}
-          onChange={(e) => setMessage(e.target.value)}
-          className="mb-4 w-full resize-none rounded border border-colosseum-surface-light bg-colosseum-bg px-3 py-2 text-sm text-white outline-none focus:border-gold transition-colors"
+        {/* Tier selector (replaces legacy amount input) */}
+        <SponsorTierSelector
+          agents={agents}
+          battleId={battleId}
+          onSuccess={onClose}
+          onClose={onClose}
         />
-
-        {/* Error */}
-        {error && (
-          <p className="mb-3 text-xs text-blood">{error}</p>
-        )}
-
-        {/* Actions */}
-        <div className="flex items-center gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 rounded border border-colosseum-surface-light py-2.5 text-sm font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSend}
-            disabled={submitting}
-            className="flex-1 rounded bg-gold py-2.5 text-sm font-bold uppercase tracking-wider text-colosseum-bg transition-all hover:bg-gold-light active:scale-[0.98] disabled:opacity-60"
-          >
-            {submitting ? "Sending..." : "Send Support"}
-          </button>
-        </div>
       </div>
     </div>
   );

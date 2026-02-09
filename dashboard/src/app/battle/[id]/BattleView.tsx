@@ -1,16 +1,15 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback } from "react";
 import {
-  ArenaLayout,
+  HexBattleArena,
   ActionFeed,
   EpochTimer,
   MarketTicker,
   MOCK_AGENTS,
   MOCK_FEED,
-  MOCK_PRICES,
 } from "@/components/battle";
-import type { BattleAgent, FeedEntry, MarketPrice } from "@/components/battle";
+import type { BattleAgent, FeedEntry } from "@/components/battle";
 import { BettingPanel, SponsorModal, SponsorFeed } from "@/components/betting";
 import { useBattleStream } from "@/hooks/useBattleStream";
 import type {
@@ -255,7 +254,6 @@ export default function BattleView({ battleId }: BattleViewProps) {
     connected,
     events,
     agentStates,
-    marketData,
     latestEpoch,
     winner,
   } = useBattleStream(battleId);
@@ -388,40 +386,46 @@ export default function BattleView({ battleId }: BattleViewProps) {
     });
   }, [agentStates, events, agentMeta, winner]);
 
-  // ─── Transform marketData → MarketPrice[] ────────────────────────
-  const prices: MarketPrice[] = useMemo(() => {
-    if (!marketData && isDev) return MOCK_PRICES;
-    if (!marketData) return [];
-    return Object.entries(marketData.prices).map(([asset, price]) => ({
-      asset: asset as MarketPrice["asset"],
-      price,
-      change24h: 0, // No historical delta from WS; could track over time
-    }));
-  }, [marketData]);
-
   const currentEpoch = latestEpoch || (isDev ? 3 : 0);
   const aliveCount = agents.filter((a) => a.alive).length;
 
+  // Count sponsor events for particle effects
+  const sponsorEventCount = useMemo(
+    () => feed.filter((f) => f.type === "SPONSOR").length,
+    [feed],
+  );
+
+  // Mobile sidebar tabs
+  type SidebarTab = "bets" | "sponsors" | "markets" | "log";
+  const [mobileSidebarTab, setMobileSidebarTab] = useState<SidebarTab>("bets");
+
+  const sidebarTabs: { key: SidebarTab; label: string }[] = [
+    { key: "bets", label: "Bets" },
+    { key: "sponsors", label: "Sponsors" },
+    { key: "markets", label: "Markets" },
+    { key: "log", label: "Log" },
+  ];
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
       {/* Battle header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <h1 className="font-cinzel text-2xl font-black tracking-wider text-gold">
+      <div className="flex flex-wrap items-center justify-between gap-2 sm:gap-4">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <h1 className="font-cinzel text-lg font-black tracking-wider text-gold sm:text-2xl">
             BATTLE #{battleId}
           </h1>
           {winner ? (
-            <span className="rounded bg-gold/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-gold">
+            <span className="rounded bg-gold/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-gold sm:text-xs">
               FINISHED
             </span>
           ) : (
-            <span className="rounded bg-green-500/20 px-2 py-0.5 text-xs font-bold uppercase tracking-wider text-green-400 animate-pulse">
+            <span className="rounded bg-green-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-green-400 animate-pulse sm:text-xs">
               LIVE
             </span>
           )}
           {/* Connection status */}
           <span
-            className={`flex items-center gap-1 text-[10px] uppercase tracking-wider ${
+            className={`hidden items-center gap-1 text-[10px] uppercase tracking-wider sm:flex ${
               connected ? "text-green-500" : "text-gray-600"
             }`}
           >
@@ -433,12 +437,12 @@ export default function BattleView({ battleId }: BattleViewProps) {
             {connected ? "Connected" : "Disconnected"}
           </span>
         </div>
-        <div className="flex items-center gap-4 text-xs text-gray-500">
+        <div className="flex items-center gap-2 text-[10px] text-gray-500 sm:gap-4 sm:text-xs">
           <span>
             Epoch <span className="text-white">{currentEpoch}</span>/20
           </span>
           <span>
-            <span className="text-white">{aliveCount}</span> gladiators remain
+            <span className="text-white">{aliveCount}</span> alive
           </span>
           <span className="hidden sm:inline text-gray-700">
             Pool: <span className="text-gold">2,450 $HNADS</span>
@@ -448,11 +452,11 @@ export default function BattleView({ battleId }: BattleViewProps) {
 
       {/* Winner announcement */}
       {winner && (
-        <div className="rounded-lg border border-gold/40 bg-gold/10 p-4 text-center">
-          <div className="font-cinzel text-2xl font-black tracking-widest text-gold">
+        <div className="rounded-lg border border-gold/40 bg-gold/10 p-3 text-center sm:p-4">
+          <div className="font-cinzel text-xl font-black tracking-widest text-gold sm:text-2xl">
             VICTORY
           </div>
-          <div className="mt-1 text-sm text-white">
+          <div className="mt-1 text-xs text-white sm:text-sm">
             <span className="font-bold">{winner.winnerName}</span> is the last
             nad standing after {winner.totalEpochs} epochs!
           </div>
@@ -460,7 +464,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
       )}
 
       {/* Cinematic top bar: epoch timer + pool + sponsor button */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3">
         <div className="card lg:col-span-2">
           <EpochTimer currentEpoch={currentEpoch} />
         </div>
@@ -478,7 +482,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
           </div>
           <button
             onClick={() => setSponsorModalOpen(true)}
-            className="mt-3 w-full rounded border border-gold/30 bg-gold/10 py-1.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98]"
+            className="mt-3 w-full rounded border border-gold/30 bg-gold/10 py-2.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] sm:py-1.5"
           >
             Sponsor a Gladiator
           </button>
@@ -486,31 +490,51 @@ export default function BattleView({ battleId }: BattleViewProps) {
       </div>
 
       {/* Main layout: arena + sidebar */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-3">
         {/* Arena */}
         <div className="card lg:col-span-2">
-          <ArenaLayout agents={agents} currentEpoch={currentEpoch} />
+          <HexBattleArena agents={agents} currentEpoch={currentEpoch} sponsorEventCount={sponsorEventCount} />
         </div>
 
-        {/* Sidebar: betting panel + sponsors + market + feed */}
+        {/* Sidebar: desktop shows all panels stacked, mobile uses tabs */}
         <div className="flex flex-col gap-4">
+          {/* Mobile tab bar for sidebar panels */}
+          <div className="flex overflow-x-auto border-b border-colosseum-surface-light lg:hidden">
+            {sidebarTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => setMobileSidebarTab(tab.key)}
+                className={`relative flex-1 whitespace-nowrap px-3 py-3 text-xs font-bold uppercase tracking-wider transition-colors ${
+                  mobileSidebarTab === tab.key
+                    ? "text-gold"
+                    : "text-gray-600 hover:text-gray-400"
+                }`}
+              >
+                {tab.label}
+                {mobileSidebarTab === tab.key && (
+                  <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-gold" />
+                )}
+              </button>
+            ))}
+          </div>
+
           {/* Betting panel */}
-          <div className="card">
-            <BettingPanel agents={agents} battleId={battleId} />
+          <div className={`card ${mobileSidebarTab !== "bets" ? "hidden lg:block" : ""}`}>
+            <BettingPanel agents={agents} battleId={battleId} winner={winner} />
           </div>
 
           {/* Sponsor feed */}
-          <div className="card">
-            <SponsorFeed />
+          <div className={`card ${mobileSidebarTab !== "sponsors" ? "hidden lg:block" : ""}`}>
+            <SponsorFeed events={events} agentMeta={agentMeta} />
           </div>
 
           {/* Market ticker */}
-          <div className="card">
-            <MarketTicker prices={prices} />
+          <div className={`card ${mobileSidebarTab !== "markets" ? "hidden lg:block" : ""}`}>
+            <MarketTicker />
           </div>
 
           {/* Action feed */}
-          <div className="card flex-1">
+          <div className={`card flex-1 ${mobileSidebarTab !== "log" ? "hidden lg:block" : ""}`}>
             <ActionFeed entries={feed} />
           </div>
         </div>
@@ -526,6 +550,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
         open={sponsorModalOpen}
         onClose={() => setSponsorModalOpen(false)}
         agents={agents}
+        battleId={battleId}
       />
     </div>
   );

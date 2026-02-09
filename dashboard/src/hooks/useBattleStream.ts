@@ -32,6 +32,7 @@ export interface StreamAgentState {
   class: string;
   hp: number;
   isAlive: boolean;
+  thoughts?: string[];
 }
 
 export interface StreamMarketData {

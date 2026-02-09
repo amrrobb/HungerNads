@@ -40,23 +40,23 @@ export default function RecentResults({ results }: RecentResultsProps) {
         {results.map((r) => (
           <div
             key={r.battleId}
-            className="flex items-center justify-between rounded border border-colosseum-surface-light bg-colosseum-bg/50 px-3 py-2"
+            className="flex flex-col gap-1.5 rounded border border-colosseum-surface-light bg-colosseum-bg/50 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
           >
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-gray-600">#{r.battleId}</span>
-              <div>
-                <span className="text-sm font-bold text-gray-200">
+            <div className="flex items-center gap-3 min-w-0">
+              <span className="text-xs text-gray-600 flex-shrink-0">#{r.battleId}</span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm font-bold text-gray-200 truncate">
                   {r.winnerName}
                 </span>
-                <span className={`ml-2 ${CLASS_BADGE[r.winnerClass]}`}>
+                <span className={`flex-shrink-0 ${CLASS_BADGE[r.winnerClass]}`}>
                   {r.winnerClass}
                 </span>
               </div>
             </div>
-            <div className="flex items-center gap-4 text-xs text-gray-500">
+            <div className="flex items-center gap-3 text-[10px] text-gray-500 sm:gap-4 sm:text-xs">
               <span>{r.killCount} kills</span>
               <span>{r.durationEpochs} epochs</span>
-              <span>{timeAgo(r.endedAt)}</span>
+              <span suppressHydrationWarning>{timeAgo(r.endedAt)}</span>
             </div>
           </div>
         ))}

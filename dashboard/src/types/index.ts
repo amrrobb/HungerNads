@@ -19,6 +19,8 @@ export interface AgentState {
   maxHp: number;
   alive: boolean;
   kills: number;
+  /** Rolling buffer of the agent's recent LLM reasoning snippets (thought feed). */
+  thoughts?: string[];
 }
 
 /** Market prediction action */

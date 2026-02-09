@@ -11,6 +11,7 @@ import {
 import Particles, { initParticlesEngine } from "@tsparticles/react";
 import { loadSlim } from "@tsparticles/slim";
 import type { ISourceOptions } from "@tsparticles/engine";
+import type { AgentClass } from "@/types";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -33,6 +34,8 @@ export interface ParticleEffect {
   /** Optional end position for directional effects (attack) */
   toX?: number;
   toY?: number;
+  /** Optional agent class for class-specific color palettes */
+  agentClass?: AgentClass;
   createdAt: number;
 }
 
@@ -76,6 +79,47 @@ const EFFECT_DURATIONS: Record<ParticleEffectType, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Class-specific particle color palettes
+// ---------------------------------------------------------------------------
+
+const CLASS_PARTICLE_PALETTES: Record<AgentClass, {
+  attack: string[];
+  defend: string[];
+  death: string[];
+}> = {
+  WARRIOR: {
+    attack: ["#dc2626", "#ef4444", "#f87171", "#ff6b35", "#ea580c"],
+    defend: ["#dc2626", "#f87171", "#fca5a5", "#b91c1c"],
+    death: ["#dc2626", "#ef4444", "#b91c1c", "#991b1b", "#f97316", "#fbbf24"],
+  },
+  TRADER: {
+    attack: ["#3b82f6", "#60a5fa", "#06b6d4", "#22d3ee", "#0ea5e9"],
+    defend: ["#3b82f6", "#60a5fa", "#93c5fd", "#0284c7"],
+    death: ["#3b82f6", "#60a5fa", "#0ea5e9", "#06b6d4", "#22d3ee", "#67e8f9"],
+  },
+  SURVIVOR: {
+    attack: ["#22c55e", "#4ade80", "#10b981", "#34d399", "#059669"],
+    defend: ["#22c55e", "#4ade80", "#86efac", "#16a34a"],
+    death: ["#22c55e", "#4ade80", "#16a34a", "#15803d", "#10b981", "#fbbf24"],
+  },
+  PARASITE: {
+    attack: ["#7c3aed", "#a78bfa", "#8b5cf6", "#c084fc", "#9333ea"],
+    defend: ["#7c3aed", "#a78bfa", "#c4b5fd", "#6d28d9"],
+    death: ["#7c3aed", "#a78bfa", "#8b5cf6", "#6d28d9", "#c084fc", "#e879f9"],
+  },
+  GAMBLER: {
+    attack: ["#dc2626", "#f59e0b", "#22c55e", "#3b82f6", "#7c3aed"],
+    defend: ["#f59e0b", "#fbbf24", "#fde68a", "#d97706", "#ec4899", "#a78bfa"],
+    death: ["#dc2626", "#f59e0b", "#22c55e", "#3b82f6", "#7c3aed", "#ec4899"],
+  },
+};
+
+/** Default palettes used when no agentClass is specified (backward compat). */
+const DEFAULT_ATTACK_COLORS = ["#dc2626", "#ef4444", "#f87171", "#ff6b35"];
+const DEFAULT_DEFEND_COLORS = ["#7c3aed", "#818cf8", "#a78bfa", "#60a5fa"];
+const DEFAULT_DEATH_COLORS = ["#dc2626", "#ef4444", "#b91c1c", "#991b1b", "#f97316", "#fbbf24"];
+
+// ---------------------------------------------------------------------------
 // tsParticles config builders
 // ---------------------------------------------------------------------------
 
@@ -84,9 +128,9 @@ function buildTsParticlesConfig(effect: ParticleEffect): ISourceOptions {
     case "attack":
       return attackConfig(effect);
     case "defend":
-      return defendConfig();
+      return defendConfig(effect.agentClass);
     case "death":
-      return deathConfig();
+      return deathConfig(effect.agentClass);
     case "sponsor":
       return sponsorConfig();
     case "prediction_win":
@@ -102,12 +146,16 @@ function attackConfig(effect: ParticleEffect): ISourceOptions {
     ? Math.atan2(effect.toY - effect.y, effect.toX - effect.x) * (180 / Math.PI)
     : 0;
 
+  const colors = effect.agentClass
+    ? CLASS_PARTICLE_PALETTES[effect.agentClass].attack
+    : DEFAULT_ATTACK_COLORS;
+
   return {
     fullScreen: { enable: false },
     fpsLimit: 60,
     particles: {
       number: { value: 20 },
-      color: { value: ["#dc2626", "#ef4444", "#f87171", "#ff6b35"] },
+      color: { value: colors },
       shape: { type: "circle" },
       opacity: {
         value: { min: 0.5, max: 1 },
@@ -139,13 +187,17 @@ function attackConfig(effect: ParticleEffect): ISourceOptions {
   };
 }
 
-function defendConfig(): ISourceOptions {
+function defendConfig(agentClass?: AgentClass): ISourceOptions {
+  const colors = agentClass
+    ? CLASS_PARTICLE_PALETTES[agentClass].defend
+    : DEFAULT_DEFEND_COLORS;
+
   return {
     fullScreen: { enable: false },
     fpsLimit: 60,
     particles: {
       number: { value: 30 },
-      color: { value: ["#7c3aed", "#818cf8", "#a78bfa", "#60a5fa"] },
+      color: { value: colors },
       shape: { type: "circle" },
       opacity: {
         value: { min: 0.3, max: 0.9 },
@@ -181,14 +233,18 @@ function defendConfig(): ISourceOptions {
   };
 }
 
-function deathConfig(): ISourceOptions {
+function deathConfig(agentClass?: AgentClass): ISourceOptions {
+  const colors = agentClass
+    ? CLASS_PARTICLE_PALETTES[agentClass].death
+    : DEFAULT_DEATH_COLORS;
+
   return {
     fullScreen: { enable: false },
     fpsLimit: 60,
     particles: {
       number: { value: 50 },
       color: {
-        value: ["#dc2626", "#ef4444", "#b91c1c", "#991b1b", "#f97316", "#fbbf24"],
+        value: colors,
       },
       shape: { type: ["circle", "square"] },
       opacity: {
@@ -537,6 +593,7 @@ export function useParticleEffects() {
       y: number,
       toX?: number,
       toY?: number,
+      agentClass?: AgentClass,
     ) => {
       const id = `particle-${idCounter.current++}-${Date.now()}`;
       const effect: ParticleEffect = {
@@ -546,6 +603,7 @@ export function useParticleEffects() {
         y,
         toX,
         toY,
+        agentClass,
         createdAt: Date.now(),
       };
       setEffects((prev) => [...prev, effect]);
@@ -560,18 +618,20 @@ export function useParticleEffects() {
 
   // Convenience methods
   const spawnAttack = useCallback(
-    (fromX: number, fromY: number, toX: number, toY: number) =>
-      spawnEffect("attack", fromX, fromY, toX, toY),
+    (fromX: number, fromY: number, toX: number, toY: number, agentClass?: AgentClass) =>
+      spawnEffect("attack", fromX, fromY, toX, toY, agentClass),
     [spawnEffect],
   );
 
   const spawnDefend = useCallback(
-    (x: number, y: number) => spawnEffect("defend", x, y),
+    (x: number, y: number, agentClass?: AgentClass) =>
+      spawnEffect("defend", x, y, undefined, undefined, agentClass),
     [spawnEffect],
   );
 
   const spawnDeath = useCallback(
-    (x: number, y: number) => spawnEffect("death", x, y),
+    (x: number, y: number, agentClass?: AgentClass) =>
+      spawnEffect("death", x, y, undefined, undefined, agentClass),
     [spawnEffect],
   );
 

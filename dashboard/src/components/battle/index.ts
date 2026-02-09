@@ -6,6 +6,8 @@ export { default as EpochTimer } from "./EpochTimer";
 export { default as MarketTicker } from "./MarketTicker";
 export { default as HexGridViewer } from "./HexGridViewer";
 export { default as ParticleEffects, useParticleEffects } from "./ParticleEffects";
+export { useScreenShake } from "./useScreenShake";
+export type { ShakeIntensity } from "./useScreenShake";
 
 export {
   MOCK_AGENTS,

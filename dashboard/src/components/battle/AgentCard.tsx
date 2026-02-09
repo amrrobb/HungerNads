@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "motion/react";
 import { CLASS_CONFIG, type BattleAgent } from "./mock-data";
 
 interface AgentCardProps {
@@ -25,9 +26,10 @@ function HPBar({ hp, maxHp }: { hp: number; maxHp: number }) {
         </span>
       </div>
       <div className="h-2 w-full overflow-hidden rounded-full bg-colosseum-bg">
-        <div
-          className={`hp-bar-fill h-full rounded-full ${barColor}`}
-          style={{ width: `${pct}%` }}
+        <motion.div
+          className={`h-full rounded-full ${barColor}`}
+          animate={{ width: `${pct}%` }}
+          transition={{ type: "spring", visualDuration: 0.5, bounce: 0.25 }}
         />
       </div>
     </div>

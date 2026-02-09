@@ -3,20 +3,23 @@
  *
  * Cold, analytical agent focused purely on market prediction accuracy.
  * 15-25% stakes, requires indicator confirmations (momentum, volume pattern).
- * Never attacks. Defends ~30% of the time as insurance.
+ * Prefers SABOTAGE when engaging (methodical precision, +10% class bonus).
+ * Uses DEFEND as insurance. Never ATTACKs (too risky/inefficient).
  *
- * Special: Reduces position size in volatile markets, goes all-in on
- * high-conviction signals.
+ * Combat triangle awareness:
+ * - SABOTAGE is the Trader's best combat option (+10% damage, bypasses DEFEND)
+ * - Uses DEFEND as insurance against ATTACK
+ * - Never ATTACKs (risky, inefficient, and gets punished by defenders)
  */
 
 import { BaseAgent, getDefaultActions } from './base-agent';
 import { EpochActionsSchema } from './schemas';
-import type { ArenaState, EpochActions } from './schemas';
+import type { ArenaState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
 
 // ---------------------------------------------------------------------------
-// Trader config constants (mirrors AGENT_CLASSES.md spec)
+// Trader config constants
 // ---------------------------------------------------------------------------
 
 const TRADER_STAKE_MIN = 15;
@@ -38,16 +41,26 @@ export class TraderAgent extends BaseAgent {
     return PERSONALITIES.TRADER.systemPrompt;
   }
 
+  getSkillDefinition(): SkillDefinition {
+    return {
+      name: 'INSIDER_INFO',
+      cooldown: BaseAgent.DEFAULT_SKILL_COOLDOWN,
+      description: 'INSIDER INFO: Your prediction automatically succeeds this epoch, regardless of actual market direction. Guaranteed profit.',
+    };
+  }
+
   async decide(arenaState: ArenaState): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
 
+    const skillContext = this.getSkillPromptContext();
+
     try {
       const result = await agentDecision(
         this.name,
         this.agentClass,
-        this.getPersonality(),
+        this.getPersonality() + '\n' + skillContext,
         this.hp,
         {
           eth: arenaState.marketData.prices.ETH ?? 0,
@@ -64,12 +77,24 @@ export class TraderAgent extends BaseAgent {
       // Trader guardrails: enforce class-specific constraints
       // -------------------------------------------------------------------
 
-      // 1. Trader NEVER attacks. Strip any attack the LLM hallucinated.
-      const attack = undefined;
+      // 1. Trader NEVER attacks. Strip ATTACK stance, allow SABOTAGE.
+      let combatStance: CombatStance = (result.combatStance as CombatStance) ?? 'NONE';
+      let combatTarget = result.combatTarget;
+      let combatStake = result.combatStake;
+
+      if (combatStance === 'ATTACK') {
+        // Trader doesn't use ATTACK — too risky. Convert to NONE or SABOTAGE.
+        combatStance = 'NONE';
+        combatTarget = undefined;
+        combatStake = undefined;
+      }
+
+      // If SABOTAGE, cap the stake
+      if (combatStance === 'SABOTAGE' && combatStake) {
+        combatStake = Math.min(combatStake, Math.round(this.hp * 0.15));
+      }
 
       // 2. Clamp prediction stake to Trader range (15-25%).
-      //    In volatile markets (high price changes), reduce towards minimum.
-      //    On high-conviction signals, allow up to max.
       const rawStake = result.prediction?.stake ?? TRADER_STAKE_MIN;
       const clampedStake = Math.max(
         TRADER_STAKE_MIN,
@@ -78,16 +103,25 @@ export class TraderAgent extends BaseAgent {
 
       // 3. Defend logic: Trader defends ~30% of the time as insurance.
       //    If HP is below 40%, defend more aggressively (~60%).
-      //    Always respect if the LLM explicitly chose to defend.
-      let defend = result.defend ?? false;
-      if (!defend) {
+      //    If LLM chose DEFEND, respect it.
+      if (combatStance === 'NONE') {
         const hpRatio = this.hp / this.maxHp;
         if (hpRatio < TRADER_DEFEND_HP_THRESHOLD) {
-          defend = Math.random() < TRADER_LOW_HP_DEFEND_CHANCE;
+          if (Math.random() < TRADER_LOW_HP_DEFEND_CHANCE) {
+            combatStance = 'DEFEND';
+          }
         } else {
-          defend = Math.random() < TRADER_BASE_DEFEND_CHANCE;
+          if (Math.random() < TRADER_BASE_DEFEND_CHANCE) {
+            combatStance = 'DEFEND';
+          }
         }
       }
+
+      // Trader activates INSIDER_INFO when available and in a risky situation
+      const wantsSkill = result.useSkill === true;
+      const hpRatio = this.hp / this.maxHp;
+      const shouldUseSkill = (wantsSkill || (this.canUseSkill() && hpRatio < TRADER_DEFEND_HP_THRESHOLD))
+        && this.canUseSkill();
 
       const parsed = EpochActionsSchema.safeParse({
         prediction: {
@@ -95,8 +129,10 @@ export class TraderAgent extends BaseAgent {
           direction: result.prediction?.direction,
           stake: clampedStake,
         },
-        attack,
-        defend,
+        combatStance,
+        combatTarget: (combatStance === 'SABOTAGE') ? combatTarget : undefined,
+        combatStake: (combatStance === 'SABOTAGE') ? combatStake : undefined,
+        useSkill: shouldUseSkill,
         reasoning: result.reasoning,
       });
 
@@ -118,7 +154,7 @@ export class TraderAgent extends BaseAgent {
 
   /**
    * Trader defaults are more conservative than the generic getDefaultActions.
-   * Minimum stake, no attack, defend based on HP level.
+   * Minimum stake, no attack/sabotage, defend based on HP level.
    */
   private _traderDefaults(): EpochActions {
     const base = getDefaultActions(this);
@@ -126,15 +162,13 @@ export class TraderAgent extends BaseAgent {
     // Override stake to Trader minimum
     base.prediction.stake = TRADER_STAKE_MIN;
 
-    // Never attack
-    delete (base as Record<string, unknown>).attack;
-
     // Defend if below threshold, otherwise 30% chance
     const hpRatio = this.hp / this.maxHp;
-    base.defend =
+    const shouldDefend =
       hpRatio < TRADER_DEFEND_HP_THRESHOLD ||
       Math.random() < TRADER_BASE_DEFEND_CHANCE;
 
+    base.combatStance = shouldDefend ? 'DEFEND' : 'NONE';
     base.reasoning = `[FALLBACK] ${this.name} defaulted to conservative prediction. The numbers don't lie - but the data was unclear.`;
 
     return base;

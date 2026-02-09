@@ -8,13 +8,23 @@
 import type {
   AgentClass,
   EpochActions,
+  HexCoord,
   Lesson,
   AgentProfile,
   ArenaState,
   ArenaAgentState,
   MatchupRecord,
+  SkillDefinition,
+  SkillName,
 } from './schemas';
 import type { LLMKeys } from '../llm';
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Maximum character length for each thought snippet. */
+const MAX_THOUGHT_LENGTH = 120;
 
 // ---------------------------------------------------------------------------
 // BaseAgent
@@ -30,8 +40,30 @@ export abstract class BaseAgent {
   public kills: number;
   public epochsSurvived: number;
   public lessons: Lesson[];
+  /**
+   * Rolling buffer of the agent's most recent LLM reasoning snippets.
+   * Shown to spectators as a "thought feed" on the agent card.
+   * Each entry is truncated to {@link MAX_THOUGHT_LENGTH} characters.
+   */
+  public thoughts: string[];
+  /**
+   * Agent's current hex position in the arena (axial coordinates).
+   * Null until assigned by ArenaManager.spawnAgents().
+   */
+  public position: HexCoord | null;
   /** Optional LLM API keys for Workers env (no process.env). */
   public llmKeys?: LLMKeys;
+
+  // ── Skill System ──
+  /** Epochs remaining until skill is available again. 0 = ready. */
+  public skillCooldownRemaining: number;
+  /** Whether this agent's skill is active (activated) for the current epoch. */
+  public skillActiveThisEpoch: boolean;
+
+  /** Maximum number of thoughts retained in the rolling buffer. */
+  static readonly MAX_THOUGHTS = 5;
+  /** Default cooldown for skills (epochs between uses). */
+  static readonly DEFAULT_SKILL_COOLDOWN = 5;
 
   constructor(id: string, name: string, agentClass: AgentClass) {
     this.id = id;
@@ -43,6 +75,10 @@ export abstract class BaseAgent {
     this.kills = 0;
     this.epochsSurvived = 0;
     this.lessons = [];
+    this.thoughts = [];
+    this.position = null;
+    this.skillCooldownRemaining = 0;
+    this.skillActiveThisEpoch = false;
   }
 
   // -------------------------------------------------------------------------
@@ -59,6 +95,12 @@ export abstract class BaseAgent {
    * Get the agent's personality prompt for LLM calls.
    */
   abstract getPersonality(): string;
+
+  /**
+   * Get the agent's unique class skill definition.
+   * Each subclass must return its specific skill.
+   */
+  abstract getSkillDefinition(): SkillDefinition;
 
   // -------------------------------------------------------------------------
   // HP management
@@ -96,6 +138,99 @@ export abstract class BaseAgent {
    */
   alive(): boolean {
     return this.isAlive && this.hp > 0;
+  }
+
+  // -------------------------------------------------------------------------
+  // Thought Feed
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record a reasoning snippet from the agent's LLM decision.
+   * Truncates to {@link MAX_THOUGHT_LENGTH} chars and maintains a rolling
+   * buffer of the last {@link BaseAgent.MAX_THOUGHTS} entries.
+   *
+   * Call this after each `decide()` with the reasoning string from EpochActions.
+   */
+  addThought(reasoning: string): void {
+    if (!reasoning) return;
+    const truncated = reasoning.length > MAX_THOUGHT_LENGTH
+      ? reasoning.slice(0, MAX_THOUGHT_LENGTH - 3) + '...'
+      : reasoning;
+    this.thoughts.push(truncated);
+    if (this.thoughts.length > BaseAgent.MAX_THOUGHTS) {
+      this.thoughts = this.thoughts.slice(-BaseAgent.MAX_THOUGHTS);
+    }
+  }
+
+  /**
+   * Get the most recent thought (for display on agent cards).
+   * Returns null if no thoughts have been recorded yet.
+   */
+  getLatestThought(): string | null {
+    return this.thoughts.length > 0
+      ? this.thoughts[this.thoughts.length - 1]
+      : null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Skill System
+  // -------------------------------------------------------------------------
+
+  /**
+   * Check if this agent's skill is off cooldown and ready to use.
+   */
+  canUseSkill(): boolean {
+    return this.isAlive && this.skillCooldownRemaining === 0;
+  }
+
+  /**
+   * Activate the agent's skill for this epoch.
+   * Sets the active flag and puts the skill on cooldown.
+   * Returns true if activation succeeded, false if on cooldown or dead.
+   */
+  activateSkill(): boolean {
+    if (!this.canUseSkill()) return false;
+    this.skillActiveThisEpoch = true;
+    this.skillCooldownRemaining = this.getSkillDefinition().cooldown;
+    return true;
+  }
+
+  /**
+   * Tick down the skill cooldown by 1 epoch.
+   * Called at the end of each epoch by the epoch processor.
+   */
+  tickSkillCooldown(): void {
+    if (this.skillCooldownRemaining > 0) {
+      this.skillCooldownRemaining--;
+    }
+  }
+
+  /**
+   * Reset the skill active flag. Called at the end of each epoch.
+   */
+  resetSkillActive(): void {
+    this.skillActiveThisEpoch = false;
+  }
+
+  /**
+   * Build a skill context string for LLM prompts.
+   * Tells the agent about their skill availability and what it does.
+   */
+  getSkillPromptContext(): string {
+    const skill = this.getSkillDefinition();
+    const readyStr = this.canUseSkill()
+      ? 'READY - set "useSkill": true in your response to activate!'
+      : `ON COOLDOWN (${this.skillCooldownRemaining} epochs remaining)`;
+
+    return `\nUNIQUE SKILL: ${skill.name}
+Status: ${readyStr}
+Effect: ${skill.description}
+Cooldown: ${skill.cooldown} epochs after use
+To use: Include "useSkill": true in your JSON response.${
+      skill.name === 'SIPHON'
+        ? '\nSIPHON requires a "skillTarget": "<agent name>" to specify who to steal from.'
+        : ''
+    }`;
   }
 
   // -------------------------------------------------------------------------
@@ -163,6 +298,7 @@ export abstract class BaseAgent {
    * Get current state snapshot matching ArenaAgentState schema.
    */
   getState(): ArenaAgentState {
+    const skill = this.getSkillDefinition();
     return {
       id: this.id,
       name: this.name,
@@ -172,6 +308,11 @@ export abstract class BaseAgent {
       isAlive: this.isAlive,
       kills: this.kills,
       epochsSurvived: this.epochsSurvived,
+      thoughts: [...this.thoughts],
+      position: this.position ?? undefined,
+      skillName: skill.name,
+      skillCooldownRemaining: this.skillCooldownRemaining,
+      skillActive: this.skillActiveThisEpoch,
     };
   }
 
@@ -204,7 +345,8 @@ export function getDefaultActions(agent: BaseAgent): EpochActions {
       direction,
       stake: 5, // Minimum stake - play it safe
     },
-    // No attack, no defend - just survive
+    combatStance: 'NONE',
+    // No combat - just survive
     reasoning: `[FALLBACK] ${agent.name} defaulted to safe prediction.`,
   };
 }

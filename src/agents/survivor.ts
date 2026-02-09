@@ -2,8 +2,14 @@
  * HUNGERNADS - Survivor Agent
  *
  * Defensive agent that outlasts everyone.
- * Tiny stakes (5-10%), never attacks, almost always defends.
+ * Tiny stakes (5-10%), uses DEFEND stance almost always.
  * Below 30% HP enters pure survival mode: minimum stakes, always defend.
+ *
+ * Combat triangle awareness:
+ * - DEFEND is the Survivor's strength (+20% damage reduction)
+ * - Vulnerable to SABOTAGE (bypasses defense) — may switch to NONE when
+ *   SABOTAGE is suspected to avoid paying the 3% defend cost for nothing
+ * - Never ATTACKs (-20% ATTACK damage penalty makes it useless)
  *
  * Unlike other agent classes, SURVIVOR enforces behavioral guardrails
  * post-LLM to ensure the class identity holds even if the LLM drifts.
@@ -12,12 +18,13 @@
 
 import { BaseAgent, getDefaultActions } from './base-agent';
 import { EpochActionsSchema } from './schemas';
-import type { ArenaState, EpochActions } from './schemas';
+import type { ArenaState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
+import type { AgentDecisionResult } from '../llm/multi-provider';
 
 // ---------------------------------------------------------------------------
-// Survivor configuration constants (from AGENT_CLASSES.md spec)
+// Survivor configuration constants
 // ---------------------------------------------------------------------------
 
 const SURVIVOR_CONFIG = {
@@ -29,7 +36,7 @@ const SURVIVOR_CONFIG = {
   survivalStakeMax: 5,
   /** HP percentage below which survival mode activates */
   survivalThreshold: 0.3,
-  /** Probability of defending each epoch in normal mode */
+  /** Probability of choosing DEFEND each epoch in normal mode */
   defendProbability: 0.9,
   /** Always defend below this HP ratio */
   alwaysDefendBelow: 0.3,
@@ -48,6 +55,14 @@ export class SurvivorAgent extends BaseAgent {
     return PERSONALITIES.SURVIVOR.systemPrompt;
   }
 
+  getSkillDefinition(): SkillDefinition {
+    return {
+      name: 'FORTIFY',
+      cooldown: BaseAgent.DEFAULT_SKILL_COOLDOWN,
+      description: 'FORTIFY: Become completely immune to ALL damage this epoch (combat, bleed, prediction losses). The ultimate survival tool.',
+    };
+  }
+
   async decide(arenaState: ArenaState): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
@@ -56,11 +71,13 @@ export class SurvivorAgent extends BaseAgent {
     const hpRatio = this.hp / this.maxHp;
     const inSurvivalMode = hpRatio <= SURVIVOR_CONFIG.survivalThreshold;
 
+    const skillContext = this.getSkillPromptContext();
+
     try {
       const result = await agentDecision(
         this.name,
         this.agentClass,
-        this.getPersonality(),
+        this.getPersonality() + '\n' + skillContext,
         this.hp,
         {
           eth: arenaState.marketData.prices.ETH ?? 0,
@@ -101,18 +118,17 @@ export class SurvivorAgent extends BaseAgent {
    *
    * Rules enforced:
    * 1. Stake clamped to 5-10% (or 5% in survival mode)
-   * 2. Attack is ALWAYS stripped -- Survivor never attacks
-   * 3. Defend is forced based on probability / HP threshold
+   * 2. ATTACK and SABOTAGE are ALWAYS stripped — Survivor never offends
+   * 3. Combat stance forced to DEFEND based on probability / HP threshold
+   *    (may use NONE if only saboteurs remain, to avoid wasting 3% HP)
    */
   private enforceGuardrails(
-    raw: Record<string, unknown>,
+    raw: AgentDecisionResult,
     hpRatio: number,
     inSurvivalMode: boolean,
     others: { name: string; class: string; hp: number }[],
   ): Record<string, unknown> {
-    const prediction = raw.prediction as
-      | { asset: string; direction: string; stake: number }
-      | undefined;
+    const prediction = raw.prediction;
 
     // --- Stake clamping ---
     const maxStake = inSurvivalMode
@@ -123,21 +139,27 @@ export class SurvivorAgent extends BaseAgent {
       ? Math.max(SURVIVOR_CONFIG.stakeMin, Math.min(maxStake, prediction.stake))
       : SURVIVOR_CONFIG.stakeMin;
 
-    // --- Defense logic ---
-    // Always defend in survival mode or below threshold
-    // Otherwise defend with 90% probability, skewing toward defense
-    // when aggressive agents (WARRIOR, GAMBLER) are still alive
-    let shouldDefend: boolean;
+    // --- Combat stance logic ---
+    // SURVIVOR never uses ATTACK or SABOTAGE (class penalty makes them useless).
+    // Choose between DEFEND and NONE.
+    let combatStance: CombatStance;
 
     if (inSurvivalMode || hpRatio <= SURVIVOR_CONFIG.alwaysDefendBelow) {
-      shouldDefend = true;
+      // Always defend in survival mode — unless ONLY sabotage-heavy agents remain
+      const hasAttackers = others.some(
+        a => a.class === 'WARRIOR' || a.class === 'GAMBLER',
+      );
+      const onlySaboteurs = !hasAttackers && others.some(
+        a => a.class === 'TRADER' || a.class === 'PARASITE',
+      );
+      combatStance = onlySaboteurs ? 'NONE' : 'DEFEND'; // Don't waste 3% HP if only saboteurs remain
     } else {
       const hasAggressors = others.some(
         a => a.class === 'WARRIOR' || a.class === 'GAMBLER',
       );
       // If aggressors are alive, bump probability to ~95%
       const prob = hasAggressors ? 0.95 : SURVIVOR_CONFIG.defendProbability;
-      shouldDefend = Math.random() < prob;
+      combatStance = Math.random() < prob ? 'DEFEND' : 'NONE';
     }
 
     // --- Build reasoning suffix for transparency ---
@@ -151,11 +173,17 @@ export class SurvivorAgent extends BaseAgent {
     if (prediction && prediction.stake !== clampedStake) {
       overrides.push(`stake clamped ${prediction.stake}% -> ${clampedStake}%`);
     }
-    if (raw.attack) {
-      overrides.push('attack stripped');
+    const rawStance = raw.combatStance as string | undefined;
+    if (rawStance === 'ATTACK' || rawStance === 'SABOTAGE') {
+      overrides.push(`${rawStance} stripped -> ${combatStance}`);
     }
     const overrideNote =
       overrides.length > 0 ? ` [Guardrails: ${overrides.join(', ')}]` : '';
+
+    // Survivor uses FORTIFY when in survival mode (low HP) and skill is available
+    const wantsSkill = raw.useSkill === true;
+    const shouldUseSkill = (wantsSkill || (this.canUseSkill() && inSurvivalMode))
+      && this.canUseSkill();
 
     return {
       prediction: {
@@ -163,8 +191,9 @@ export class SurvivorAgent extends BaseAgent {
         direction: prediction?.direction ?? 'UP',
         stake: clampedStake,
       },
-      // NEVER attack -- core class rule
-      defend: shouldDefend,
+      combatStance,
+      useSkill: shouldUseSkill,
+      // NEVER attack or sabotage — core class rule
       reasoning: `${modeTag}${baseReasoning}${overrideNote}`,
     };
   }
@@ -188,8 +217,8 @@ export class SurvivorAgent extends BaseAgent {
         direction,
         stake: SURVIVOR_CONFIG.stakeMin,
       },
-      defend: true,
-      reasoning: `${modeTag}[FALLBACK] ${this.name} defaulted to minimum stake + defend.`,
+      combatStance: 'DEFEND',
+      reasoning: `${modeTag}[FALLBACK] ${this.name} defaulted to minimum stake + DEFEND.`,
     };
   }
 }

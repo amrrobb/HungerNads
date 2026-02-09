@@ -262,6 +262,24 @@ export function getLLM(keys?: LLMKeys): MultiProviderLLM {
   return llmInstance;
 }
 
+// Agent decision result type (supports both new triangle and legacy fields)
+export interface AgentDecisionResult {
+  prediction: { asset: string; direction: 'UP' | 'DOWN'; stake: number };
+  // New combat triangle fields
+  combatStance?: 'ATTACK' | 'SABOTAGE' | 'DEFEND' | 'NONE';
+  combatTarget?: string;
+  combatStake?: number;
+  // Hex grid movement (optional)
+  move?: { q: number; r: number };
+  // Skill system
+  useSkill?: boolean;
+  skillTarget?: string;
+  // Legacy fields (for backward compat during migration)
+  attack?: { target: string; stake: number } | null;
+  defend?: boolean;
+  reasoning: string;
+}
+
 // Example usage for agent decisions
 export async function agentDecision(
   agentName: string,
@@ -272,12 +290,9 @@ export async function agentDecision(
   otherAgents: { name: string; class: string; hp: number }[],
   lessons: string[],
   keys?: LLMKeys,
-): Promise<{
-  prediction: { asset: string; direction: 'UP' | 'DOWN'; stake: number };
-  attack: { target: string; stake: number } | null;
-  defend: boolean;
-  reasoning: string;
-}> {
+  /** Spatial context string from grid.buildSpatialContext (optional). */
+  spatialContext?: string,
+): Promise<AgentDecisionResult> {
   const llm = getLLM(keys);
 
   const systemPrompt = `You are ${agentName}, a ${agentClass} agent in HUNGERNADS arena.
@@ -288,6 +303,10 @@ ${lessons.length > 0 ? lessons.join('\n') : 'No lessons yet.'}
 
 You must respond with ONLY valid JSON, no other text.`;
 
+  const spatialBlock = spatialContext
+    ? `\nARENA POSITION:\n${spatialContext}\n`
+    : '';
+
   const userPrompt = `MARKET PRICES:
 ETH: $${marketData.eth}
 BTC: $${marketData.btc}
@@ -296,27 +315,36 @@ MON: $${marketData.mon}
 
 YOUR STATUS:
 HP: ${hp}/1000
-
+${spatialBlock}
 OTHER AGENTS:
 ${otherAgents.map(a => `- ${a.name} (${a.class}): ${a.hp} HP`).join('\n')}
 
 ACTIONS REQUIRED:
 1. PREDICT: Choose asset (ETH/BTC/SOL/MON), direction (UP/DOWN), stake (5-50% of HP)
-2. ATTACK (optional): Target agent name, stake amount
-3. DEFEND (optional): true/false (costs 5% HP but blocks attacks)
+2. COMBAT STANCE: Choose ATTACK, SABOTAGE, DEFEND, or NONE
+   - ATTACK beats SABOTAGE (overpower: steal full stake)
+   - SABOTAGE beats DEFEND (bypass: deal 60% stake damage through defense)
+   - DEFEND beats ATTACK (absorb: reflect 50% damage, take only 25%)
+   - ATTACK/SABOTAGE require combatTarget and combatStake
+   - You can ONLY attack/sabotage ADJACENT agents (neighboring hexes)
+3. MOVE (optional): Move to an adjacent empty hex {"q": <num>, "r": <num>}
 
 Respond with JSON:
 {
   "prediction": {"asset": "ETH", "direction": "UP", "stake": 20},
-  "attack": {"target": "SURVIVOR-01", "stake": 50} or null,
-  "defend": false,
+  "combatStance": "ATTACK",
+  "combatTarget": "SURVIVOR-01",
+  "combatStake": 50,
+  "move": {"q": 1, "r": 0},
+  "useSkill": false,
+  "skillTarget": "AGENT-NAME",
   "reasoning": "Brief explanation"
 }`;
 
   const response = await llm.chat([
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
-  ], { maxTokens: 300, temperature: 0.7 });
+  ], { maxTokens: 400, temperature: 0.7 });
 
   try {
     // Clean response (remove markdown code blocks if present)
@@ -324,15 +352,29 @@ Respond with JSON:
     if (jsonStr.startsWith('```')) {
       jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
     }
-    
-    return JSON.parse(jsonStr);
+
+    const parsed = JSON.parse(jsonStr);
+
+    // Normalize: if LLM returns legacy fields, convert to new format
+    if (!parsed.combatStance && (parsed.attack || parsed.defend)) {
+      if (parsed.attack) {
+        parsed.combatStance = 'ATTACK';
+        parsed.combatTarget = parsed.attack.target;
+        parsed.combatStake = parsed.attack.stake;
+      } else if (parsed.defend) {
+        parsed.combatStance = 'DEFEND';
+      } else {
+        parsed.combatStance = 'NONE';
+      }
+    }
+
+    return parsed;
   } catch (e) {
     console.error('[LLM] Failed to parse response:', response.content);
     // Return safe defaults
     return {
       prediction: { asset: 'ETH', direction: 'UP', stake: 10 },
-      attack: null,
-      defend: false,
+      combatStance: 'NONE',
       reasoning: 'Failed to parse LLM response, using defaults',
     };
   }

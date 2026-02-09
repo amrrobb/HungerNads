@@ -146,11 +146,15 @@ export function determineCause(
   bleedAmount: number,
 ): DeathCause {
   // Sum all combat damage taken by this agent.
-  // In CombatResult, hpTransfer > 0 means the attacker stole that much HP from the target.
-  // So damage to the target = hpTransfer when !defended.
-  const combatDamage = combatResults
-    .filter(r => r.targetId === agentId && !r.defended && r.hpTransfer > 0)
-    .reduce((sum, r) => sum + r.hpTransfer, 0);
+  // In the triangle system, hpChangeTarget < 0 means the target took damage.
+  // Also account for attacker taking reflected damage (hpChangeAttacker < 0).
+  const targetDamage = combatResults
+    .filter(r => r.targetId === agentId && r.hpChangeTarget < 0)
+    .reduce((sum, r) => sum + Math.abs(r.hpChangeTarget), 0);
+  const attackerDamage = combatResults
+    .filter(r => r.attackerId === agentId && r.hpChangeAttacker < 0)
+    .reduce((sum, r) => sum + Math.abs(r.hpChangeAttacker), 0);
+  const combatDamage = targetDamage + attackerDamage;
 
   const totalDamage = combatDamage + predictionLoss + bleedAmount;
 
@@ -183,9 +187,10 @@ function findKiller(
   const damageByAttacker = new Map<string, number>();
 
   for (const result of combatResults) {
-    if (result.targetId === deadAgentId && !result.defended && result.hpTransfer > 0) {
+    // Target took damage from the attacker
+    if (result.targetId === deadAgentId && result.hpChangeTarget < 0) {
       const current = damageByAttacker.get(result.attackerId) ?? 0;
-      damageByAttacker.set(result.attackerId, current + result.hpTransfer);
+      damageByAttacker.set(result.attackerId, current + Math.abs(result.hpChangeTarget));
     }
   }
 

@@ -4,38 +4,43 @@
  * Pure chaos agent. Unpredictable decisions driven by randomness.
  * Sometimes brilliant, sometimes suicidal. The wildcard that disrupts the meta.
  *
+ * Combat triangle: Picks ANY stance randomly each epoch.
+ * Class bonus: random 0-15% on any stance (chaos rewards the bold).
+ *
  * Unlike other agents that rely primarily on LLM personality for strategy,
  * the Gambler injects programmatic randomness to guarantee unpredictability.
- * LLMs are pattern-matchers -- they struggle to be truly random.
+ * LLMs are pattern-matchers — they struggle to be truly random.
  * So we mix LLM flavor text with hard random mechanics.
  */
 
 import { BaseAgent, getDefaultActions } from './base-agent';
 import { EpochActionsSchema } from './schemas';
-import type { ArenaState, Asset, Direction, EpochActions } from './schemas';
+import type { ArenaState, Asset, Direction, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
 
 // ---------------------------------------------------------------------------
-// Gambler-specific constants from AGENT_CLASSES.md spec
+// Gambler-specific constants
 // ---------------------------------------------------------------------------
 
 const GAMBLER_CONFIG = {
-  /** Prediction stake range -- wider than the standard 5-50 cap */
+  /** Prediction stake range */
   stakeMin: 5,
-  stakeMax: 50, // Capped by PredictionSchema; spec says 80 but schema enforces 50
-  /** Probability of attacking a random target each epoch */
-  attackProbability: 0.4,
-  /** Probability of defending each epoch */
-  defendProbability: 0.3,
-  /** Max proportion of HP to risk on an attack */
-  attackStakeMaxPct: 0.4,
-  /** LLM temperature -- cranked up for maximum chaos */
+  stakeMax: 50, // Capped by PredictionSchema
+  /** Probability of each combat stance */
+  attackProbability: 0.25,
+  sabotageProbability: 0.20,
+  defendProbability: 0.20,
+  // Remaining ~35% = NONE
+  /** Max proportion of HP to risk on combat */
+  combatStakeMaxPct: 0.4,
+  /** LLM temperature — cranked up for maximum chaos */
   llmTemperature: 1.0,
 } as const;
 
 const ASSETS: readonly Asset[] = ['ETH', 'BTC', 'SOL', 'MON'] as const;
 const DIRECTIONS: readonly Direction[] = ['UP', 'DOWN'] as const;
+const STANCES: readonly CombatStance[] = ['ATTACK', 'SABOTAGE', 'DEFEND', 'NONE'] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,6 +74,14 @@ export class GamblerAgent extends BaseAgent {
     return PERSONALITIES.GAMBLER.systemPrompt;
   }
 
+  getSkillDefinition(): SkillDefinition {
+    return {
+      name: 'ALL_IN',
+      cooldown: BaseAgent.DEFAULT_SKILL_COOLDOWN,
+      description: 'ALL IN: Double or nothing! Your prediction stake is DOUBLED. If correct, you gain double HP. If wrong, you lose double HP. Pure chaos.',
+    };
+  }
+
   /**
    * The Gambler's decide() is a hybrid approach:
    * 1. Try the LLM for flavor text and reasoning (high temperature).
@@ -87,11 +100,13 @@ export class GamblerAgent extends BaseAgent {
     const chaosActions = this._buildChaosActions(others);
 
     // Try LLM for the reasoning/flavor only
+    const skillContext = this.getSkillPromptContext();
+
     try {
       const result = await agentDecision(
         this.name,
         this.agentClass,
-        this.getPersonality(),
+        this.getPersonality() + '\n' + skillContext,
         this.hp,
         {
           eth: arenaState.marketData.prices.ETH ?? 0,
@@ -109,18 +124,11 @@ export class GamblerAgent extends BaseAgent {
 
       const merged: EpochActions = {
         prediction: chaosActions.prediction,
+        combatStance: chaosActions.combatStance,
+        combatTarget: chaosActions.combatTarget,
+        combatStake: chaosActions.combatStake,
         reasoning: `[CHAOS] ${reasoning}`,
       };
-
-      // Inject attack from chaos logic (ignore LLM's attack decision)
-      if (chaosActions.attack) {
-        merged.attack = chaosActions.attack;
-      }
-
-      // Inject defend from chaos logic
-      if (chaosActions.defend) {
-        merged.defend = chaosActions.defend;
-      }
 
       // Validate the merged result
       const parsed = EpochActionsSchema.safeParse(merged);
@@ -155,25 +163,37 @@ export class GamblerAgent extends BaseAgent {
     const direction = pick(DIRECTIONS);
     const stake = randInt(GAMBLER_CONFIG.stakeMin, GAMBLER_CONFIG.stakeMax);
 
+    // Gambler randomly activates ALL IN — 50% chance when available
+    const shouldUseSkill = this.canUseSkill() && chance(0.5);
+
     const actions: EpochActions = {
       prediction: { asset, direction, stake },
+      combatStance: 'NONE',
+      useSkill: shouldUseSkill,
       reasoning: this._chaosReasoning(asset, direction, stake),
     };
 
-    // 40% chance to attack a random target
-    if (others.length > 0 && chance(GAMBLER_CONFIG.attackProbability)) {
+    // Random combat stance
+    const roll = Math.random();
+    if (others.length > 0 && roll < GAMBLER_CONFIG.attackProbability) {
+      // ATTACK a random target
       const target = pick(others);
-      const maxAttackStake = Math.max(
-        1,
-        Math.floor(this.hp * GAMBLER_CONFIG.attackStakeMaxPct),
-      );
-      const attackStake = randInt(1, maxAttackStake);
-      actions.attack = { target: target.name, stake: attackStake };
-      // Cannot attack and defend in the same epoch
-    } else if (chance(GAMBLER_CONFIG.defendProbability)) {
-      // 30% chance to defend (only if not attacking)
-      actions.defend = true;
+      const maxCombatStake = Math.max(1, Math.floor(this.hp * GAMBLER_CONFIG.combatStakeMaxPct));
+      actions.combatStance = 'ATTACK';
+      actions.combatTarget = target.name;
+      actions.combatStake = randInt(1, maxCombatStake);
+    } else if (others.length > 0 && roll < GAMBLER_CONFIG.attackProbability + GAMBLER_CONFIG.sabotageProbability) {
+      // SABOTAGE a random target
+      const target = pick(others);
+      const maxCombatStake = Math.max(1, Math.floor(this.hp * GAMBLER_CONFIG.combatStakeMaxPct));
+      actions.combatStance = 'SABOTAGE';
+      actions.combatTarget = target.name;
+      actions.combatStake = randInt(1, maxCombatStake);
+    } else if (roll < GAMBLER_CONFIG.attackProbability + GAMBLER_CONFIG.sabotageProbability + GAMBLER_CONFIG.defendProbability) {
+      // DEFEND for no reason
+      actions.combatStance = 'DEFEND';
     }
+    // else: NONE (already set)
 
     return actions;
   }

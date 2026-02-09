@@ -109,29 +109,34 @@ function extractAgentStats(
       if (predResult.correct) correctPredictions++;
     }
 
-    // Combat: attacks this agent made
+    // Combat: actions this agent initiated (ATTACK or SABOTAGE)
     const attacksOut = epoch.combatResults.filter(r => r.attackerId === agentId);
     attacksMade += attacksOut.length;
     for (const atk of attacksOut) {
-      if (!atk.defended) {
+      if (atk.hpChangeTarget < 0) {
         attacksLanded++;
-        totalDamageDealt += atk.hpTransfer;
+        totalDamageDealt += Math.abs(atk.hpChangeTarget);
+      }
+      // Attacker may also take reflected damage (ABSORB outcome)
+      if (atk.hpChangeAttacker < 0) {
+        totalDamageTaken += Math.abs(atk.hpChangeAttacker);
       }
     }
 
-    // Combat: attacks this agent received
+    // Combat: actions targeting this agent
     const attacksIn = epoch.combatResults.filter(r => r.targetId === agentId);
     attacksReceived += attacksIn.length;
     for (const atk of attacksIn) {
-      if (atk.defended) {
+      if (atk.outcome === 'ABSORB') {
         attacksBlocked++;
-      } else {
-        totalDamageTaken += atk.hpTransfer;
+      } else if (atk.hpChangeTarget < 0) {
+        totalDamageTaken += Math.abs(atk.hpChangeTarget);
       }
     }
 
-    // Defence
-    if (actions?.defend) {
+    // Defence (new combat stance system)
+    const stance = actions?.combatStance ?? (actions?.defend ? 'DEFEND' : 'NONE');
+    if (stance === 'DEFEND') {
       timesDefended++;
     }
 
@@ -164,23 +169,24 @@ function extractAgentStats(
         parts.push(`Predicted ${asset} ${dir} (${stake}% stake) -> ${result} (${hp} HP)`);
       }
 
-      if (actions.attack) {
-        const target = actions.attack.target;
-        const atkResult = attacksOut.find(r => r.targetId === target || r.targetId !== agentId);
+      const combatStance = actions.combatStance ?? (actions.attack ? 'ATTACK' : actions.defend ? 'DEFEND' : 'NONE');
+      const combatTarget = actions.combatTarget ?? actions.attack?.target;
+
+      if ((combatStance === 'ATTACK' || combatStance === 'SABOTAGE') && combatTarget) {
+        const atkResult = attacksOut.find(r => r.targetId === combatTarget || r.targetId !== agentId);
         if (atkResult) {
-          if (atkResult.defended) {
-            parts.push(`Attacked ${target} -> BLOCKED (lost ${Math.abs(atkResult.hpTransfer)} HP)`);
-          } else {
-            parts.push(`Attacked ${target} -> HIT (stole ${atkResult.hpTransfer} HP)`);
-          }
+          const dmgDealt = Math.abs(atkResult.hpChangeTarget);
+          const dmgTaken = atkResult.hpChangeAttacker < 0 ? Math.abs(atkResult.hpChangeAttacker) : 0;
+          parts.push(`${combatStance} ${combatTarget} -> ${atkResult.outcome} (dealt ${dmgDealt} HP${dmgTaken > 0 ? `, took ${dmgTaken} reflected` : ''})`);
         } else {
-          parts.push(`Attempted attack on ${target}`);
+          parts.push(`Attempted ${combatStance} on ${combatTarget}`);
         }
       }
 
-      if (actions.defend) {
-        const blocked = attacksIn.filter(a => a.defended).length;
-        parts.push(`Defended (blocked ${blocked} attacks)`);
+      if (combatStance === 'DEFEND') {
+        const blocked = attacksIn.filter(a => a.outcome === 'ABSORB').length;
+        const bypassed = attacksIn.filter(a => a.outcome === 'BYPASS').length;
+        parts.push(`DEFEND (absorbed ${blocked} attacks${bypassed > 0 ? `, bypassed by ${bypassed} sabotage` : ''})`);
       }
 
       if (died) {

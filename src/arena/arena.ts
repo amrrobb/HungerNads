@@ -16,7 +16,9 @@ import { TraderAgent } from '../agents/trader';
 import { SurvivorAgent } from '../agents/survivor';
 import { ParasiteAgent } from '../agents/parasite';
 import { GamblerAgent } from '../agents/gambler';
-import type { AgentClass, ArenaAgentState } from '../agents/schemas';
+import type { AgentClass, ArenaAgentState, HexCoord } from '../agents/schemas';
+import { pickAgentName } from '../agents/names';
+import { assignInitialPositions, getAdjacentAgents, buildSpatialContext } from './grid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,17 +79,9 @@ export const DEFAULT_BATTLE_CONFIG: BattleConfig = {
   epochIntervalMs: 5 * 60 * 1000, // 5 minutes
 };
 
-// ---------------------------------------------------------------------------
-// Agent names per class (thematic)
-// ---------------------------------------------------------------------------
-
-const AGENT_NAMES: Record<AgentClass, string[]> = {
-  WARRIOR: ['Bloodfang', 'Ironjaw', 'Wrathbringer', 'Skullcrusher', 'Doomhammer'],
-  TRADER: ['Quant', 'Fibonacci', 'Bollinger', 'Ichimoku', 'Stochastic'],
-  SURVIVOR: ['Cockroach', 'Endurance', 'Tortoise', 'Wallflower', 'Persistence'],
-  PARASITE: ['Leech', 'Mimic', 'Copycat', 'Shadow', 'Symbiote'],
-  GAMBLER: ['Dice', 'Jackpot', 'Wildcard', 'Roulette', 'Chaos'],
-};
+/** Agent count limits for battles. */
+export const MIN_AGENTS = 2;
+export const MAX_AGENTS = 20;
 
 /** All five agent classes in canonical order. */
 const ALL_CLASSES: AgentClass[] = ['WARRIOR', 'TRADER', 'SURVIVOR', 'PARASITE', 'GAMBLER'];
@@ -115,16 +109,7 @@ function createAgent(agentClass: AgentClass, id: string, name: string): BaseAgen
   }
 }
 
-/**
- * Pick a name for an agent class, cycling through the pool.
- * Uses a simple counter map to avoid duplicates within a battle.
- */
-function pickName(agentClass: AgentClass, usedCounters: Map<AgentClass, number>): string {
-  const pool = AGENT_NAMES[agentClass];
-  const idx = usedCounters.get(agentClass) ?? 0;
-  usedCounters.set(agentClass, idx + 1);
-  return pool[idx % pool.length];
-}
+// pickName is now handled by pickAgentName from '../agents/names'
 
 // ---------------------------------------------------------------------------
 // ArenaManager
@@ -172,17 +157,32 @@ export class ArenaManager {
     }
 
     const classList = classes ?? ALL_CLASSES;
-    if (classList.length < 2) {
-      throw new Error('Need at least 2 agents for a battle');
+    if (classList.length < MIN_AGENTS) {
+      throw new Error(`Need at least ${MIN_AGENTS} agents for a battle, got ${classList.length}`);
+    }
+    if (classList.length > MAX_AGENTS) {
+      throw new Error(`Cannot exceed ${MAX_AGENTS} agents per battle, got ${classList.length}`);
     }
 
-    const nameCounters = new Map<AgentClass, number>();
+    const usedNames = new Set<string>();
+    const agentIds: string[] = [];
 
     for (const agentClass of classList) {
       const id = crypto.randomUUID();
-      const name = pickName(agentClass, nameCounters);
+      const name = pickAgentName(agentClass, usedNames);
+      usedNames.add(name);
       const agent = createAgent(agentClass, id, name);
       this.agents.set(id, agent);
+      agentIds.push(id);
+    }
+
+    // Assign initial hex positions across the 7-hex arena
+    const positions = assignInitialPositions(agentIds);
+    for (const [agentId, pos] of positions) {
+      const agent = this.agents.get(agentId);
+      if (agent) {
+        agent.position = pos;
+      }
     }
   }
 
@@ -259,6 +259,48 @@ export class ArenaManager {
       }
     }
     return undefined;
+  }
+
+  // -------------------------------------------------------------------------
+  // Hex Grid Positioning
+  // -------------------------------------------------------------------------
+
+  /**
+   * Get a map of all agent positions (agentId -> HexCoord).
+   * Only includes agents that have a position assigned.
+   */
+  getAgentPositions(): Map<string, HexCoord> {
+    const positions = new Map<string, HexCoord>();
+    for (const [id, agent] of this.agents) {
+      if (agent.position) {
+        positions.set(id, agent.position);
+      }
+    }
+    return positions;
+  }
+
+  /**
+   * Get a name lookup map (agentId -> name) for all agents.
+   * Used by the spatial context builder for LLM prompts.
+   */
+  getAgentNameMap(): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const [id, agent] of this.agents) {
+      names.set(id, agent.name);
+    }
+    return names;
+  }
+
+  /**
+   * Get agents adjacent to a given agent (based on hex positions).
+   * Returns BaseAgent instances for agents on neighboring hexes.
+   */
+  getAdjacentAgents(agentId: string): BaseAgent[] {
+    const positions = this.getAgentPositions();
+    const adjacentIds = getAdjacentAgents(agentId, positions);
+    return adjacentIds
+      .map(id => this.agents.get(id))
+      .filter((a): a is BaseAgent => a !== undefined);
   }
 
   // -------------------------------------------------------------------------

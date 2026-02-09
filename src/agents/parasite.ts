@@ -4,11 +4,16 @@
  * Copy-trading agent that mirrors the most profitable agent's predictions.
  * Low-risk predictions at 50% of host's size, scavenges dying agents,
  * defends when targeted. Struggles late-game when hosts die.
+ *
+ * Combat triangle awareness:
+ * - Prefers SABOTAGE for scavenging (+10% class bonus, bypasses defenders)
+ * - Uses DEFEND when targeted by attackers
+ * - Never ATTACKs (too risky for the Parasite's survival-first style)
  */
 
 import { BaseAgent, getDefaultActions } from './base-agent';
 import { EpochActionsSchema } from './schemas';
-import type { ArenaState, ArenaAgentState, EpochActions } from './schemas';
+import type { ArenaState, ArenaAgentState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
 
@@ -83,6 +88,14 @@ export class ParasiteAgent extends BaseAgent {
     return PERSONALITIES.PARASITE.systemPrompt;
   }
 
+  getSkillDefinition(): SkillDefinition {
+    return {
+      name: 'SIPHON',
+      cooldown: BaseAgent.DEFAULT_SKILL_COOLDOWN,
+      description: 'SIPHON: Steal 10% of a target agent\'s current HP and add it to your own. Requires "skillTarget" with target agent name.',
+    };
+  }
+
   async decide(arenaState: ArenaState): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
@@ -98,10 +111,11 @@ export class ParasiteAgent extends BaseAgent {
 
     const scavengeContext =
       scavengeTargets.length > 0
-        ? `\nSCAVENGE TARGETS (below 15% HP): ${scavengeTargets.map(t => `${t.name} (${t.hp} HP)`).join(', ')}. Easy pickings - small attack stakes to finish them.`
+        ? `\nSCAVENGE TARGETS (below 15% HP): ${scavengeTargets.map(t => `${t.name} (${t.hp} HP)`).join(', ')}. Use SABOTAGE - your +10% class bonus makes it the best scavenging tool. Bypasses any desperate DEFEND.`
         : '\nNo scavenge targets available (no agents below 15% HP).';
 
-    const parasitePromptSuffix = `${hostContext}${scavengeContext}`;
+    const skillContext = this.getSkillPromptContext();
+    const parasitePromptSuffix = `${hostContext}${scavengeContext}\n${skillContext}`;
 
     try {
       const result = await agentDecision(
@@ -120,10 +134,34 @@ export class ParasiteAgent extends BaseAgent {
         this.llmKeys,
       );
 
+      // Enforce Parasite guardrails: never ATTACK (use SABOTAGE instead)
+      let combatStance: CombatStance = (result.combatStance as CombatStance) ?? 'NONE';
+      let combatTarget = result.combatTarget;
+      let combatStake = result.combatStake;
+
+      // Convert ATTACK to SABOTAGE (Parasite's strength)
+      if (combatStance === 'ATTACK') {
+        combatStance = 'SABOTAGE';
+      }
+
+      // Cap SABOTAGE stake (Parasite is cautious)
+      if (combatStance === 'SABOTAGE' && combatStake) {
+        combatStake = Math.min(combatStake, Math.round(this.hp * 0.15));
+      }
+
+      // Parasite activates SIPHON when available and a good host target exists
+      const wantsSkill = result.useSkill === true;
+      const skillTarget = result.skillTarget;
+      const shouldUseSkill = (wantsSkill || (this.canUseSkill() && host !== null))
+        && this.canUseSkill();
+
       const parsed = EpochActionsSchema.safeParse({
         prediction: result.prediction,
-        attack: result.attack ?? undefined,
-        defend: result.defend,
+        combatStance,
+        combatTarget: (combatStance === 'SABOTAGE') ? combatTarget : undefined,
+        combatStake: (combatStance === 'SABOTAGE') ? combatStake : undefined,
+        useSkill: shouldUseSkill,
+        skillTarget: shouldUseSkill ? (skillTarget ?? host?.name) : undefined,
         reasoning: result.reasoning,
       });
 

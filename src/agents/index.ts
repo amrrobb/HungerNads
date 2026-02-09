@@ -12,6 +12,8 @@ export {
   AssetSchema,
   DirectionSchema,
   AgentClassSchema,
+  HexCoordSchema,
+  CombatStanceSchema,
   PredictionSchema,
   AttackSchema,
   EpochActionsSchema,
@@ -27,6 +29,8 @@ export type {
   Asset,
   Direction,
   AgentClass,
+  HexCoord,
+  CombatStance,
   Prediction,
   Attack,
   EpochActions,
@@ -69,6 +73,11 @@ export const AGENT_CLASSES: readonly ['WARRIOR', 'TRADER', 'SURVIVOR', 'PARASITE
 // ---------------------------------------------------------------------------
 export { PERSONALITIES, buildSystemPrompt } from './personalities';
 export type { AgentPersonality, PersonalityKey } from './personalities';
+
+// ---------------------------------------------------------------------------
+// Agent Names
+// ---------------------------------------------------------------------------
+export { AGENT_NAME_POOLS, pickAgentName, pickRosterNames } from './names';
 
 // ---------------------------------------------------------------------------
 // Agent subclasses

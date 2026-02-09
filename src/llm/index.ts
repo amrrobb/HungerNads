@@ -6,4 +6,4 @@
  */
 
 export { MultiProviderLLM, getLLM, agentDecision } from './multi-provider';
-export type { LLMKeys } from './multi-provider';
+export type { LLMKeys, AgentDecisionResult } from './multi-provider';

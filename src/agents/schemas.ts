@@ -27,6 +27,50 @@ export const AgentClassSchema = z.enum([
 export type AgentClass = z.infer<typeof AgentClassSchema>;
 
 // ---------------------------------------------------------------------------
+// Hex Grid Coordinates
+// ---------------------------------------------------------------------------
+
+export const HexCoordSchema = z.object({
+  q: z.number().int(),
+  r: z.number().int(),
+});
+export type HexCoord = z.infer<typeof HexCoordSchema>;
+
+// ---------------------------------------------------------------------------
+// Skill System - Unique class abilities with cooldowns
+// ---------------------------------------------------------------------------
+
+export const SkillNameSchema = z.enum([
+  'BERSERK',      // Warrior: double attack damage, take 50% more damage
+  'INSIDER_INFO', // Trader: prediction auto-succeeds this epoch
+  'FORTIFY',      // Survivor: immune to all damage for 1 epoch
+  'SIPHON',       // Parasite: steal 10% HP from target
+  'ALL_IN',       // Gambler: double or nothing on prediction stake
+]);
+export type SkillName = z.infer<typeof SkillNameSchema>;
+
+export const SkillDefinitionSchema = z.object({
+  name: SkillNameSchema,
+  /** Epochs between uses (after activation, wait this many epochs) */
+  cooldown: z.number().int().positive(),
+  /** Human-readable description */
+  description: z.string(),
+});
+export type SkillDefinition = z.infer<typeof SkillDefinitionSchema>;
+
+export const SkillActivationSchema = z.object({
+  agentId: z.string(),
+  agentName: z.string(),
+  skillName: SkillNameSchema,
+  /** Target agent ID (for targeted skills like SIPHON) */
+  targetId: z.string().optional(),
+  targetName: z.string().optional(),
+  /** Description of the effect for spectators */
+  effectDescription: z.string(),
+});
+export type SkillActivation = z.infer<typeof SkillActivationSchema>;
+
+// ---------------------------------------------------------------------------
 // EpochActions - What an agent does each epoch
 // ---------------------------------------------------------------------------
 
@@ -43,11 +87,31 @@ export const AttackSchema = z.object({
 });
 export type Attack = z.infer<typeof AttackSchema>;
 
+// ---------------------------------------------------------------------------
+// Combat Stance - 3-way triangle: Attack > Sabotage > Defend > Attack
+// ---------------------------------------------------------------------------
+
+export const CombatStanceSchema = z.enum(['ATTACK', 'SABOTAGE', 'DEFEND', 'NONE']);
+export type CombatStance = z.infer<typeof CombatStanceSchema>;
+
 export const EpochActionsSchema = z.object({
   prediction: PredictionSchema,
+  /** Combat stance for this epoch. NONE = skip combat entirely. */
+  combatStance: CombatStanceSchema.optional().default('NONE'),
+  /** Target agent name/id. Required for ATTACK and SABOTAGE stances. */
+  combatTarget: z.string().optional(),
+  /** HP stake for ATTACK and SABOTAGE (absolute HP). */
+  combatStake: z.number().positive().optional(),
+  /** Optional movement to an adjacent hex. Target hex coordinate. */
+  move: HexCoordSchema.optional(),
+  /** Whether to activate the agent's unique class skill this epoch. */
+  useSkill: z.boolean().optional(),
+  /** Target agent name for targeted skills (e.g. SIPHON). */
+  skillTarget: z.string().optional(),
+  reasoning: z.string(),
+  // ── Legacy fields (deprecated, kept for backward compat during migration) ──
   attack: AttackSchema.optional(),
   defend: z.boolean().optional(),
-  reasoning: z.string(),
 });
 export type EpochActions = z.infer<typeof EpochActionsSchema>;
 
@@ -114,6 +178,17 @@ export const ArenaAgentStateSchema = z.object({
   isAlive: z.boolean(),
   kills: z.number().int().nonnegative(),
   epochsSurvived: z.number().int().nonnegative(),
+  /** Rolling buffer of the agent's most recent LLM reasoning snippets. */
+  thoughts: z.array(z.string()).default([]),
+  /** Agent's current hex position in the arena (axial coordinates). */
+  position: HexCoordSchema.optional(),
+  // ── Skill System ──
+  /** Name of this agent's unique skill. */
+  skillName: SkillNameSchema.optional(),
+  /** Epochs remaining until skill is available. 0 = ready. */
+  skillCooldownRemaining: z.number().int().nonnegative().optional(),
+  /** Whether this agent's skill is currently active this epoch. */
+  skillActive: z.boolean().optional(),
 });
 export type ArenaAgentState = z.infer<typeof ArenaAgentStateSchema>;
 

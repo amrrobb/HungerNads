@@ -5,10 +5,11 @@
  *
  * Strategy:
  * - Prediction: High stakes (25-50% HP), momentum-chasing
- * - Attack:     Hunts the weakest agent below 40% HP. Always attacks if prey exists.
- * - Defend:     Almost never (<10%). Only considers it below 20% HP.
+ * - Combat:     Favors ATTACK stance to overpower targets. Uses SABOTAGE
+ *               against suspected defenders. Rarely DEFENDs.
  * - Special:    Escalates aggression when winning (HP advantage).
  *               Desperate all-in when losing (low HP).
+ *               Class bonus: +20% ATTACK damage, -10% DEFEND.
  *
  * Behavioral enforcement:
  * The LLM shapes the *flavour* of decisions (asset picks, trash-talk), but
@@ -18,12 +19,13 @@
 
 import { BaseAgent } from './base-agent';
 import { EpochActionsSchema } from './schemas';
-import type { ArenaState, ArenaAgentState, EpochActions } from './schemas';
+import type { ArenaState, ArenaAgentState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
+import type { AgentDecisionResult } from '../llm/multi-provider';
 
 // ---------------------------------------------------------------------------
-// Warrior configuration constants (from AGENT_CLASSES.md spec)
+// Warrior configuration constants
 // ---------------------------------------------------------------------------
 
 const WARRIOR_CONFIG = {
@@ -33,9 +35,9 @@ const WARRIOR_CONFIG = {
   stakeMax: 50,
   /** HP ratio below which a target becomes "prey" */
   preyThreshold: 0.4,
-  /** Probability of attacking when prey exists (0-1) */
-  attackProbability: 0.7,
-  /** Defend probability (0-1) — barely ever */
+  /** Probability of engaging in combat when prey exists (0-1) */
+  combatProbability: 0.7,
+  /** Probability of choosing DEFEND stance (0-1) — barely ever */
   defendProbability: 0.1,
   /** HP ratio below which the Warrior even considers defending */
   defendHpThreshold: 0.2,
@@ -43,6 +45,8 @@ const WARRIOR_CONFIG = {
   winningThreshold: 0.6,
   /** HP ratio considered "desperate" triggers all-in behaviour */
   desperateThreshold: 0.15,
+  /** Probability of using SABOTAGE vs ATTACK when target is a known defender */
+  sabotageVsDefenderProb: 0.4,
 } as const;
 
 export class WarriorAgent extends BaseAgent {
@@ -52,6 +56,14 @@ export class WarriorAgent extends BaseAgent {
 
   getPersonality(): string {
     return PERSONALITIES.WARRIOR.systemPrompt;
+  }
+
+  getSkillDefinition(): SkillDefinition {
+    return {
+      name: 'BERSERK',
+      cooldown: BaseAgent.DEFAULT_SKILL_COOLDOWN,
+      description: 'BERSERK: Double your ATTACK damage this epoch, but take 50% more damage from all sources. High risk, high reward.',
+    };
   }
 
   // -------------------------------------------------------------------------
@@ -73,9 +85,10 @@ export class WarriorAgent extends BaseAgent {
     const weakestTarget = this.findWeakestPrey(aliveOthers);
 
     // Build context hints for the LLM prompt
+    const skillContext = this.getSkillPromptContext();
     const tacticalHints = this.buildTacticalHints(
       hpRatio, isWinning, isDesperate, weakestTarget, aliveOthers,
-    );
+    ) + '\n' + skillContext;
 
     // ----- Call LLM -----
     const others = aliveOthers.map(a => ({ name: a.name, class: a.class, hp: a.hp }));
@@ -99,7 +112,7 @@ export class WarriorAgent extends BaseAgent {
 
       // ----- Parse + enforce Warrior constraints -----
       const enforced = this.enforceWarriorBehaviour(
-        result, hpRatio, isWinning, isDesperate, weakestTarget,
+        result, hpRatio, isWinning, isDesperate, weakestTarget, aliveOthers,
       );
 
       const parsed = EpochActionsSchema.safeParse(enforced);
@@ -108,13 +121,13 @@ export class WarriorAgent extends BaseAgent {
         console.warn(
           `[WARRIOR:${this.name}] Schema validation failed after enforcement, using warrior defaults`,
         );
-        return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget);
+        return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers);
       }
 
       return parsed.data;
     } catch (error) {
       console.error(`[WARRIOR:${this.name}] Decision failed:`, error);
-      return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget);
+      return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers);
     }
   }
 
@@ -149,21 +162,24 @@ export class WarriorAgent extends BaseAgent {
       lines.push(
         `YOU ARE AT ${Math.round(hpRatio * 100)}% HP. THIS IS YOUR LAST STAND.`,
         'Go all-in. Maximum aggression. Take someone down with you.',
-        'Stake 50%. Attack the weakest. No mercy. No surrender.',
+        'Stake 50%. ATTACK the weakest. No mercy. No surrender.',
       );
     } else if (isWinning) {
       lines.push(
         `You are DOMINATING at ${Math.round(hpRatio * 100)}% HP while others crumble.`,
         'Escalate. Press your advantage. Hunt them down.',
-        'Increase your stakes. Attack relentlessly. Finish them.',
+        'Increase your stakes. ATTACK relentlessly. Finish them.',
       );
     }
 
     if (weakestTarget) {
       const targetHpPct = Math.round((weakestTarget.hp / weakestTarget.maxHp) * 100);
+      const isDefender = weakestTarget.class === 'SURVIVOR';
       lines.push(
         `PREY DETECTED: ${weakestTarget.name} (${weakestTarget.class}) at ${targetHpPct}% HP.`,
-        'This is a kill opportunity. ATTACK THEM.',
+        isDefender
+          ? 'Target is a SURVIVOR - they probably DEFEND. Use SABOTAGE to bypass!'
+          : 'ATTACK THEM. Overpower and steal their HP.',
       );
     } else if (aliveOthers.length > 0) {
       lines.push(
@@ -172,7 +188,7 @@ export class WarriorAgent extends BaseAgent {
     }
 
     lines.push(
-      `Remember: You are a WARRIOR. Stakes between ${WARRIOR_CONFIG.stakeMin}% and ${WARRIOR_CONFIG.stakeMax}%. Defense is for cowards.`,
+      `Remember: You are a WARRIOR. Stakes between ${WARRIOR_CONFIG.stakeMin}% and ${WARRIOR_CONFIG.stakeMax}%. ATTACK is your strength (+20% damage).`,
     );
 
     return lines.join('\n');
@@ -183,90 +199,99 @@ export class WarriorAgent extends BaseAgent {
   // -------------------------------------------------------------------------
 
   private enforceWarriorBehaviour(
-    raw: {
-      prediction: { asset: string; direction: 'UP' | 'DOWN'; stake: number };
-      attack: { target: string; stake: number } | null;
-      defend: boolean;
-      reasoning: string;
-    },
+    raw: AgentDecisionResult,
     hpRatio: number,
     isWinning: boolean,
     isDesperate: boolean,
     weakestTarget: ArenaAgentState | null,
-  ): {
-    prediction: { asset: string; direction: string; stake: number };
-    attack?: { target: string; stake: number };
-    defend?: boolean;
-    reasoning: string;
-  } {
+    aliveOthers: ArenaAgentState[],
+  ): Record<string, unknown> {
+    const prediction = raw.prediction;
+
     // --- Prediction stake enforcement ---
-    let stake = raw.prediction.stake;
+    let stake = prediction?.stake ?? WARRIOR_CONFIG.stakeMin;
 
     if (isDesperate) {
-      // All-in when desperate
       stake = 50;
     } else if (isWinning) {
-      // Escalate when winning — push towards upper range
       stake = Math.max(stake, 35);
       stake = Math.min(stake, WARRIOR_CONFIG.stakeMax);
     } else {
-      // Normal: clamp to Warrior range
       stake = Math.max(stake, WARRIOR_CONFIG.stakeMin);
       stake = Math.min(stake, WARRIOR_CONFIG.stakeMax);
     }
 
-    // --- Attack enforcement ---
-    let attack: { target: string; stake: number } | undefined;
+    // --- Combat stance enforcement ---
+    let combatStance: CombatStance = (raw.combatStance as CombatStance) ?? 'NONE';
+    let combatTarget: string | undefined = raw.combatTarget as string | undefined;
+    let combatStake: number | undefined = raw.combatStake as number | undefined;
 
     if (weakestTarget) {
-      // Prey exists — Warriors almost always attack
-      const shouldAttack = Math.random() < WARRIOR_CONFIG.attackProbability;
-      if (shouldAttack || isDesperate) {
-        // Attack stake: proportional to how weak the target is, minimum 30 HP
+      // Prey exists — Warriors almost always engage
+      const shouldEngage = Math.random() < WARRIOR_CONFIG.combatProbability;
+      if (shouldEngage || isDesperate) {
+        // Decide ATTACK vs SABOTAGE based on target class
+        const isTargetDefender = weakestTarget.class === 'SURVIVOR';
+        if (isTargetDefender && Math.random() < WARRIOR_CONFIG.sabotageVsDefenderProb) {
+          combatStance = 'SABOTAGE';
+        } else {
+          combatStance = 'ATTACK';
+        }
+        combatTarget = weakestTarget.name;
+
+        // Combat stake: proportional to how weak the target is
         const targetWeakness = 1 - weakestTarget.hp / weakestTarget.maxHp;
-        const attackStake = Math.max(
+        combatStake = Math.max(
           30,
           Math.round(this.hp * 0.1 * (1 + targetWeakness)),
         );
-        attack = {
-          target: weakestTarget.name,
-          stake: Math.min(attackStake, Math.round(this.hp * 0.3)),
-        };
+        combatStake = Math.min(combatStake, Math.round(this.hp * 0.3));
       }
-    } else if (raw.attack) {
-      // LLM picked a target even though no one is below threshold — allow it
-      // but cap the stake
-      attack = {
-        target: raw.attack.target,
-        stake: Math.min(raw.attack.stake, Math.round(this.hp * 0.2)),
-      };
+    } else if (combatStance === 'ATTACK' || combatStance === 'SABOTAGE') {
+      // LLM picked a target even though no one is below threshold — allow it but cap stake
+      if (combatTarget && combatStake) {
+        combatStake = Math.min(combatStake, Math.round(this.hp * 0.2));
+      } else {
+        combatStance = 'NONE';
+        combatTarget = undefined;
+        combatStake = undefined;
+      }
     }
 
     // --- Defend enforcement ---
-    // Warriors almost never defend. Override the LLM unless HP is critical.
-    let defend: boolean | undefined;
-    if (hpRatio < WARRIOR_CONFIG.defendHpThreshold && Math.random() < WARRIOR_CONFIG.defendProbability) {
-      // Critical HP + lucky roll: okay, defend this once
-      defend = true;
-      attack = undefined; // Can't attack and defend simultaneously
-    } else {
-      defend = false;
+    // Warriors almost never defend. Override unless HP is critical.
+    if (combatStance === 'DEFEND') {
+      if (hpRatio < WARRIOR_CONFIG.defendHpThreshold && Math.random() < WARRIOR_CONFIG.defendProbability) {
+        // Critical HP + lucky roll: okay, defend this once
+        combatStance = 'DEFEND';
+        combatTarget = undefined;
+        combatStake = undefined;
+      } else {
+        combatStance = 'NONE'; // Strip the defend
+      }
     }
 
-    // If attacking, can't defend
-    if (attack) {
-      defend = false;
+    // If engaging, can't defend
+    if (combatStance === 'ATTACK' || combatStance === 'SABOTAGE') {
+      // Already set correctly
     }
+
+    // Warrior is naturally aggressive — auto-activate BERSERK when attacking and skill is ready
+    const wantsSkill = raw.useSkill === true;
+    const shouldUseSkill = wantsSkill ||
+      (this.canUseSkill() && (combatStance === 'ATTACK') && (isDesperate || isWinning));
 
     return {
       prediction: {
-        asset: raw.prediction.asset,
-        direction: raw.prediction.direction,
+        asset: prediction?.asset ?? 'ETH',
+        direction: prediction?.direction ?? 'UP',
         stake,
       },
-      attack,
-      defend: defend || undefined,
-      reasoning: raw.reasoning,
+      combatStance,
+      combatTarget,
+      combatStake,
+      useSkill: shouldUseSkill && this.canUseSkill(),
+      reasoning: (raw.reasoning as string) ?? 'BLOOD AND GLORY.',
     };
   }
 
@@ -278,6 +303,7 @@ export class WarriorAgent extends BaseAgent {
     hpRatio: number,
     isDesperate: boolean,
     weakestTarget: ArenaAgentState | null,
+    aliveOthers: ArenaAgentState[],
   ): EpochActions {
     const assets = ['ETH', 'BTC', 'SOL', 'MON'] as const;
     const asset = assets[Math.floor(Math.random() * assets.length)];
@@ -286,6 +312,7 @@ export class WarriorAgent extends BaseAgent {
 
     const actions: EpochActions = {
       prediction: { asset, direction, stake },
+      combatStance: 'NONE',
       reasoning: isDesperate
         ? `[WARRIOR FALLBACK] ${this.name} is cornered. Going all-in. BLOOD AND GLORY.`
         : `[WARRIOR FALLBACK] ${this.name} charges forward. No plan, just violence.`,
@@ -293,11 +320,11 @@ export class WarriorAgent extends BaseAgent {
 
     // Attack weakest if available
     if (weakestTarget) {
-      const attackStake = Math.max(30, Math.round(this.hp * 0.15));
-      actions.attack = {
-        target: weakestTarget.name,
-        stake: Math.min(attackStake, Math.round(this.hp * 0.3)),
-      };
+      const isDefender = weakestTarget.class === 'SURVIVOR';
+      actions.combatStance = isDefender ? 'SABOTAGE' : 'ATTACK';
+      actions.combatTarget = weakestTarget.name;
+      const combatStakeVal = Math.max(30, Math.round(this.hp * 0.15));
+      actions.combatStake = Math.min(combatStakeVal, Math.round(this.hp * 0.3));
     }
 
     return actions;

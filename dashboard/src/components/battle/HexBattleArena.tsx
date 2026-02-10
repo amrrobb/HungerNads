@@ -187,20 +187,36 @@ function hexVertices(cx: number, cy: number, size: number): string {
 
 /**
  * Deterministic agent-to-hex assignment for 37-tile grid.
- * Spreads 5 agents across the grid: one center, four on ring 1 edges.
+ * Spreads agents across ring 1 first (6 tiles), then ring 2 (12 tiles),
+ * then center as a last resort. Avoids stacking everyone at (0,0).
  */
 function assignDefaultPositions(agentIds: string[]): Map<string, HexCoord> {
   const positions = new Map<string, HexCoord>();
-  // Strategic placement: center + 4 ring-1 positions (N, E, S, W)
-  const defaultSlots: HexCoord[] = [
-    { q: 0, r: 0 },   // CENTER
-    { q: 0, r: -1 },  // N (ring 1)
-    { q: 1, r: 0 },   // E (ring 1)
-    { q: 0, r: 1 },   // S (ring 1)
-    { q: -1, r: 0 },  // W (ring 1)
-    { q: 1, r: -1 },  // NE (ring 1)
-    { q: -1, r: 1 },  // SW (ring 1)
+  // Ring 1 tiles (6 hexes around center) — visually spread out
+  const ring1: HexCoord[] = [
+    { q: 0, r: -1 },  // N
+    { q: 1, r: -1 },  // NE
+    { q: 1, r: 0 },   // SE
+    { q: 0, r: 1 },   // S
+    { q: -1, r: 1 },  // SW
+    { q: -1, r: 0 },  // NW
   ];
+  // Ring 2 tiles (12 hexes) — overflow for 7+ agents
+  const ring2: HexCoord[] = [
+    { q: 0, r: -2 },  // N far
+    { q: 1, r: -2 },  // NNE
+    { q: 2, r: -2 },  // NE far
+    { q: 2, r: -1 },  // ENE
+    { q: 2, r: 0 },   // E far
+    { q: 1, r: 1 },   // ESE
+    { q: 0, r: 2 },   // S far
+    { q: -1, r: 2 },  // SSW
+    { q: -2, r: 2 },  // SW far
+    { q: -2, r: 1 },  // WSW
+    { q: -2, r: 0 },  // W far
+    { q: -1, r: -1 }, // WNW
+  ];
+  const defaultSlots: HexCoord[] = [...ring1, ...ring2, { q: 0, r: 0 }];
   for (let i = 0; i < agentIds.length && i < defaultSlots.length; i++) {
     positions.set(agentIds[i], defaultSlots[i]);
   }
@@ -378,7 +394,13 @@ function HexTile({
   const cfg = agent ? CLASS_CONFIG[agent.class] : null;
 
   return (
-    <g>
+    <g
+      style={isWinner ? {
+        filter: "url(#winner-glow)",
+        transform: `translate(${center.x}px, ${center.y}px) scale(1.15) translate(${-center.x}px, ${-center.y}px)`,
+        transition: "transform 0.6s ease-out, filter 0.6s ease-out",
+      } : undefined}
+    >
       {/* Glow filter for active states */}
       {(isDefending || isWinner || isAttackSource) && (
         <polygon
@@ -727,11 +749,11 @@ function HexTile({
                 textAnchor="middle"
                 dominantBaseline="middle"
                 fill="#dc2626"
-                fontSize="16"
+                fontSize="18"
                 fontWeight="900"
                 fontFamily="monospace"
                 letterSpacing="0.2em"
-                style={{ transformOrigin: `${center.x}px ${center.y - 2}px` }}
+                style={{ transformOrigin: `${center.x}px ${center.y - 2}px`, textShadow: '0 0 8px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.7)' }}
                 initial={{ scale: 0, rotate: -30, opacity: 0 }}
                 animate={{ scale: 1, rotate: -12, opacity: 0.85 }}
                 transition={{
@@ -747,7 +769,7 @@ function HexTile({
               {/* Phase 3a: Agent content transitioning to ghost (~600ms, delayed 600ms) */}
               <motion.g
                 initial={{ opacity: 1 }}
-                animate={{ opacity: 0.15 }}
+                animate={{ opacity: 0.4 }}
                 transition={{ duration: 0.6, delay: 0.6, ease: "easeOut" }}
                 style={{ filter: glowFilter }}
               >
@@ -803,7 +825,7 @@ function HexTile({
         if (isGhost) {
           return (
             <g
-              opacity={0.15}
+              opacity={0.4}
               style={{ filter: "grayscale(1)", pointerEvents: "none" }}
             >
               {agentContent}
@@ -861,12 +883,13 @@ function HexTile({
             textAnchor="middle"
             dominantBaseline="middle"
             fill="#dc2626"
-            fontSize="16"
+            fontSize="18"
             fontWeight="900"
             fontFamily="monospace"
             letterSpacing="0.2em"
             opacity="0.85"
             transform={`rotate(-12, ${center.x}, ${center.y})`}
+            style={{ textShadow: '0 0 8px rgba(0,0,0,0.9), 0 0 16px rgba(0,0,0,0.7)' }}
           >
             REKT
           </text>
@@ -1643,6 +1666,12 @@ export default function HexBattleArena({
               </feMerge>
             </filter>
 
+            {/* Winner gold glow — layered feDropShadow for prominent ring */}
+            <filter id="winner-glow" x="-40%" y="-40%" width="180%" height="180%">
+              <feDropShadow dx="0" dy="0" stdDeviation="8" floodColor="#FFD700" floodOpacity="0.6" />
+              <feDropShadow dx="0" dy="0" stdDeviation="4" floodColor="#FFD700" floodOpacity="0.3" />
+            </filter>
+
             {/* Cornucopia center radial glow */}
             <radialGradient id="cornucopia-glow" cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="rgba(245,158,11,0.12)" />
@@ -1791,7 +1820,7 @@ export default function HexBattleArena({
               key={agent.id}
               className={`rounded border p-3 text-center text-xs transition-all duration-1000 sm:p-2 ${
                 mobileIsGhost
-                  ? "pointer-events-none border-gray-800 bg-colosseum-surface/50 opacity-[0.15] grayscale"
+                  ? "pointer-events-none border-gray-800 bg-colosseum-surface/50 opacity-[0.4] grayscale"
                   : mobileIsDying
                     ? "border-blood bg-blood/10 opacity-50"
                     : agent.isWinner
@@ -1841,7 +1870,7 @@ export default function HexBattleArena({
                 )}
               </div>
               {mobileIsGhost && (
-                <div className="mt-0.5 text-[9px] font-bold tracking-wider text-blood">
+                <div className="mt-0.5 text-[10px] font-bold tracking-wider text-blood [text-shadow:_0_0_8px_rgba(0,0,0,0.9)]">
                   REKT
                 </div>
               )}
@@ -1878,7 +1907,7 @@ export default function HexBattleArena({
           <span className="inline-block h-2 w-4 rounded-sm bg-blood/50" />
           Wrong
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex items-center gap-1 [text-shadow:_0_0_8px_rgba(0,0,0,0.9)]">
           <span className="inline-block h-2 w-4 rounded-sm bg-gray-700" />
           REKT
         </span>

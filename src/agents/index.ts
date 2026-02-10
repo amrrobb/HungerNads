@@ -52,7 +52,8 @@ export type ArenaContext = ArenaStateType;
 // ---------------------------------------------------------------------------
 // Base agent + default actions
 // ---------------------------------------------------------------------------
-export { BaseAgent, getDefaultActions } from './base-agent';
+export { BaseAgent, getDefaultActions, getFallbackMove } from './base-agent';
+export type { FallbackContext } from './base-agent';
 
 // LLM key type re-export for convenience
 export type { LLMKeys } from '../llm';

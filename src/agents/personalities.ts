@@ -38,11 +38,12 @@ export interface AgentPersonality {
 // ---------------------------------------------------------------------------
 
 const HEX_GRID_RULES = `
-ARENA GRID - 19-TILE HEX POSITIONING:
-The arena is a 19-tile hexagonal grid with 3 rings:
-- CORNUCOPIA (center 7 tiles, rings 0-1): High-value items spawn here at battle start. Weapons, shields, rations.
-- EDGE (outer 12 tiles, ring 2): Dangerous perimeter. You start here. Fewer resources.
-Each agent starts on an EDGE tile and must move inward to reach the cornucopia loot.
+ARENA GRID - 37-TILE HEX POSITIONING:
+The arena is a 37-tile hexagonal grid with 4 rings (radius 3):
+- CORNUCOPIA (center 7 tiles, rings 0-1): Lv4 + Lv3. High-value items spawn here at battle start. Weapons, shields, rations.
+- NORMAL (middle 12 tiles, ring 2): Lv2. Standard resources, moderate spawns.
+- EDGE (outer 18 tiles, ring 3): Lv1. Dangerous perimeter. You start here. Sparse resources.
+Each agent starts on an EDGE tile (outer ring) and must move inward to reach the cornucopia loot.
 
 MOVEMENT:
 - You occupy one hex. Other agents occupy other hexes.
@@ -95,6 +96,23 @@ UNIQUE SKILLS (one per class, cooldown between uses):
 To use your skill: set "useSkill": true in your JSON response.
 Targeted skills also need "skillTarget": "<agent name>".`;
 
+const PHASE_STORM_RULES = `
+BATTLE PHASES - THE ARENA SHRINKS:
+The battle progresses through 4 phases. The storm closes in, forcing agents toward the center.
+- LOOT PHASE: No combat. Race inward for cornucopia items. Grab weapons, shields, rations.
+- HUNT PHASE: Combat enabled. Outer ring (Lv1) becomes storm. 18 tiles dangerous, 19 safe.
+- BLOOD PHASE: Storm tightens. Lv1 + Lv2 tiles are storm. Only 7 center tiles safe. Forced fights.
+- FINAL STAND: Only the center tile (Lv4) is safe. Kill or die. Maximum storm damage.
+
+STORM DAMAGE:
+- Agents on storm tiles take escalating damage each epoch.
+- HUNT: ~100 damage/epoch. BLOOD: ~150. FINAL STAND: ~200+.
+- Damage increases the longer you stay in the storm.
+- NEVER stay on a storm tile if you can move to a safe one.
+
+Your spatial context below tells you your current phase, storm status, and nearby threats/items.
+Use this information to make smart movement and combat decisions.`;
+
 const ALLIANCE_RULES = `
 ALLIANCE SYSTEM - NON-AGGRESSION PACTS:
 You can propose a temporary alliance (non-aggression pact) with another agent.
@@ -135,6 +153,7 @@ YOUR NAME: ${agentName}
 YOUR CLASS: ${personality.class}
 RISK LEVEL: ${personality.riskLevel}
 ${HEX_GRID_RULES}
+${PHASE_STORM_RULES}
 ${COMBAT_TRIANGLE_RULES}
 ${ALLIANCE_RULES}
 ${lessonsBlock}
@@ -202,7 +221,14 @@ STRATEGY:
 - If the market feels uncertain, still stake at least 20%.
 - combatStake should be proportional to how weak the target is.
 - Watch out for SURVIVORS who DEFEND - your ATTACK will be reflected. Consider SABOTAGE against known defenders.
-- If you suspect a target will DEFEND, use SABOTAGE to bypass their defense.`,
+- If you suspect a target will DEFEND, use SABOTAGE to bypass their defense.
+
+PHASE STRATEGY (adapt based on current phase):
+- LOOT: Rush toward center (cornucopia) for weapons. Move inward aggressively. No combat yet — position for HUNT.
+- HUNT: Chase the weakest nearby agent. Move toward low-HP targets. Use weapons if you found any.
+- BLOOD: Kill or be killed. Attack anyone adjacent. The storm forces everyone together — hunt them down.
+- FINAL STAND: Maximum aggression. Attack anyone you can reach. This is your moment to dominate.
+- NEVER stay on a storm tile. Move to a safe tile before attacking if possible.`,
   },
 
   TRADER: {
@@ -229,7 +255,14 @@ STRATEGY:
 - Combat stance should usually be NONE - let others waste HP fighting.
 - If below 40% HP, consider DEFEND or SABOTAGE against your biggest threat.
 - SABOTAGE is your best combat option: it bypasses DEFEND and deals reliable damage.
-- Never waste HP on ATTACK when prediction accuracy is the real game.`,
+- Never waste HP on ATTACK when prediction accuracy is the real game.
+
+PHASE STRATEGY (adapt based on current phase):
+- LOOT: Position near high-value items (cornucopia). Collect ORACLE items for prediction advantage. Move inward methodically.
+- HUNT: Keep distance from warriors. Position near items. Avoid storm tiles — lost HP means fewer prediction resources.
+- BLOOD: Stay on safe tiles. SABOTAGE anyone who gets adjacent if they threaten you. Focus on prediction accuracy.
+- FINAL STAND: Predict accurately and survive. The storm is the biggest threat now, not other agents.
+- Always prioritize safe tiles over item collection. Lost HP from storm > value of any item.`,
   },
 
   SURVIVOR: {
@@ -255,7 +288,14 @@ STRATEGY:
 - If all aggressive agents are dead, consider NONE to save the 3% HP DEFEND cost.
 - Choose the asset you are most confident about, even if the upside is small.
 - Your enemy is the bleed (2% HP drain per epoch). Minimize all other losses.
-- You win by being the last one standing, not by having the most kills.`,
+- You win by being the last one standing, not by having the most kills.
+
+PHASE STRATEGY (adapt based on current phase):
+- LOOT: Move inward cautiously. Grab rations and shields — they're survival tools. Avoid warriors rushing to center.
+- HUNT: Stay just inside the safe zone boundary. Avoid combat. Move toward rations whenever visible.
+- BLOOD: Turtle on safe tiles. DEFEND against any adjacent threats. Use FORTIFY if low HP and storm is closing.
+- FINAL STAND: Maximum defense. You've outlasted most — keep defending. The storm kills reckless agents for you.
+- ALWAYS move to safe tiles first. The storm is your biggest enemy, worse than any warrior.`,
   },
 
   PARASITE: {
@@ -282,7 +322,14 @@ STRATEGY:
 - If the leading agent is a TRADER, follow their market read.
 - Only SABOTAGE if an agent is below 150 HP - easy pickings.
 - combatStake should be small (just enough to finish them).
-- If a WARRIOR is targeting you, DEFEND. Otherwise, NONE to save HP.`,
+- If a WARRIOR is targeting you, DEFEND. Otherwise, NONE to save HP.
+
+PHASE STRATEGY (adapt based on current phase):
+- LOOT: Follow the strongest agent at 1-2 tile distance. Let them clear the path. Grab items they skip.
+- HUNT: Shadow the leading agent. Copy their movement direction. Stay close but not adjacent (avoid accidental combat).
+- BLOOD: The herd thins. Scavenge dying agents with SABOTAGE. Keep following the strongest survivor.
+- FINAL STAND: Your host may be dead. Make original decisions. SIPHON the strongest remaining agent if available.
+- Stay on safe tiles. Follow your host toward center — they'll lead you away from the storm.`,
   },
 
   GAMBLER: {
@@ -309,7 +356,14 @@ STRATEGY:
 - Sometimes SABOTAGE a DEFENDER just because you can.
 - Sometimes DEFEND for no reason. Sometimes go NONE when everyone expects you to fight.
 - Occasionally make a brilliant move purely by accident.
-- You are the wildcard. The audience loves you or hates you. Never boring.`,
+- You are the wildcard. The audience loves you or hates you. Never boring.
+
+PHASE STRATEGY (chaos but storm-aware):
+- LOOT: Sprint to center or wander randomly. Grab whatever item is closest. Chaos from epoch 1.
+- HUNT: Attack random agents. Move unpredictably. BUT if you're on a storm tile, move to a safe one — even chaos has limits.
+- BLOOD: ALL IN on everything. BERSERK mode. The storm forces the fight and you LOVE it.
+- FINAL STAND: Pure madness. Attack the strongest agent. Use ALL IN. Go out in a blaze of glory.
+- NEVER stay on a storm tile when a safe tile is adjacent. You're chaotic, not suicidal.`,
   },
 } as const;
 

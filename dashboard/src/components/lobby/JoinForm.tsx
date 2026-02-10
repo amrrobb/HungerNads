@@ -13,6 +13,7 @@ interface JoinFormProps {
   battleId: string;
   onJoined: (agentId: string) => void;
   disabled?: boolean; // true when lobby is full or user already joined
+  feeAmount?: string; // entry fee in MON (e.g. "0.1"), '0' or undefined = free
 }
 
 /** Short class descriptions shown under each class button */
@@ -43,20 +44,28 @@ export default function JoinForm({
   battleId,
   onJoined,
   disabled = false,
+  feeAmount = '0',
 }: JoinFormProps) {
   const [selectedClass, setSelectedClass] = useState<AgentClass | null>(null);
   const [agentName, setAgentName] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
+  const [walletAddress, setWalletAddress] = useState("");
+  const [txHash, setTxHash] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
+
+  const hasFee = parseFloat(feeAmount) > 0;
 
   // ---- Derived state ----
   const nameIsValid = agentName.length > 0 && NAME_REGEX.test(agentName);
   const nameHasInvalidChars =
     agentName.length > 0 && !NAME_REGEX.test(agentName);
+  const walletIsValid = /^0x[0-9a-fA-F]{40}$/.test(walletAddress);
+  const txHashIsValid = /^0x[0-9a-fA-F]{64}$/.test(txHash);
+  const feeFieldsValid = !hasFee || (walletIsValid && txHashIsValid);
   const canSubmit =
-    !disabled && !isPending && selectedClass !== null && nameIsValid;
+    !disabled && !isPending && selectedClass !== null && nameIsValid && feeFieldsValid;
 
   // ---- Handlers ----
   const handleNameChange = useCallback(
@@ -94,6 +103,12 @@ export default function JoinForm({
       if (imageUrl.trim()) {
         body.imageUrl = imageUrl.trim();
       }
+      if (hasFee && walletAddress.trim()) {
+        body.walletAddress = walletAddress.trim();
+      }
+      if (hasFee && txHash.trim()) {
+        body.txHash = txHash.trim();
+      }
 
       const res = await fetch(`${API_BASE}/battle/${battleId}/join`, {
         method: "POST",
@@ -106,7 +121,10 @@ export default function JoinForm({
         const serverError =
           (payload as Record<string, string>).error ?? `HTTP ${res.status}`;
 
-        // Map known 409 variants to user-friendly messages
+        // Map known error codes to user-friendly messages
+        if (res.status === 402) {
+          throw new Error("Payment required: send the entry fee and provide your txHash");
+        }
         if (res.status === 409) {
           const lower = serverError.toLowerCase();
           if (lower.includes("full")) {
@@ -269,6 +287,87 @@ export default function JoinForm({
         </div>
       </div>
 
+      {/* ---- Entry Fee Section (only when fee > 0) ---- */}
+      {hasFee && (
+        <div className="space-y-4 rounded-lg border border-gold/30 bg-gold/5 p-4">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase tracking-wider text-gray-400">
+              Entry Fee Required
+            </span>
+            <span className="text-sm font-bold text-gold">
+              {feeAmount} MON
+            </span>
+          </div>
+          <p className="text-[11px] leading-relaxed text-gray-500">
+            Send {feeAmount} MON to the HungernadsArena contract, then paste your wallet address and transaction hash below.
+          </p>
+
+          {/* Wallet Address */}
+          <div>
+            <label
+              htmlFor="wallet-address"
+              className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400"
+            >
+              Wallet Address
+            </label>
+            <input
+              id="wallet-address"
+              type="text"
+              value={walletAddress}
+              onChange={(e) => {
+                setWalletAddress(e.target.value);
+                setError("");
+              }}
+              disabled={disabled}
+              placeholder="0x..."
+              autoComplete="off"
+              className={`w-full rounded-lg border-2 bg-colosseum-surface px-3 py-2.5 font-mono text-xs text-gray-100 placeholder-gray-600 outline-none transition-colors ${
+                walletAddress.length > 0 && !walletIsValid
+                  ? "border-blood focus:border-blood"
+                  : "border-colosseum-surface-light focus:border-gold/60"
+              } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+            />
+            {walletAddress.length > 0 && !walletIsValid && (
+              <p className="mt-1 text-[11px] text-blood-light">
+                Must be a valid Ethereum address (0x + 40 hex chars)
+              </p>
+            )}
+          </div>
+
+          {/* Transaction Hash */}
+          <div>
+            <label
+              htmlFor="tx-hash"
+              className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400"
+            >
+              Payment TX Hash
+            </label>
+            <input
+              id="tx-hash"
+              type="text"
+              value={txHash}
+              onChange={(e) => {
+                setTxHash(e.target.value);
+                setError("");
+              }}
+              disabled={disabled}
+              placeholder="0x..."
+              autoComplete="off"
+              className={`w-full rounded-lg border-2 bg-colosseum-surface px-3 py-2.5 font-mono text-xs text-gray-100 placeholder-gray-600 outline-none transition-colors ${
+                txHash.length > 0 && !txHashIsValid
+                  ? "border-blood focus:border-blood"
+                  : "border-colosseum-surface-light focus:border-gold/60"
+              } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+            />
+            {txHash.length > 0 && !txHashIsValid && (
+              <p className="mt-1 text-[11px] text-blood-light">
+                Must be a valid transaction hash (0x + 64 hex chars)
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ---- Error message ---- */}
       {error && (
         <div className="rounded-lg border border-blood/30 bg-blood/10 px-4 py-2.5 text-sm text-blood-light">
@@ -309,6 +408,8 @@ export default function JoinForm({
             </svg>
             Entering Arena...
           </span>
+        ) : hasFee ? (
+          `Pay ${feeAmount} MON & Enter`
         ) : (
           "Enter the Arena"
         )}

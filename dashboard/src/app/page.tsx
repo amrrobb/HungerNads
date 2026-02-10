@@ -341,14 +341,24 @@ export default function HomePage() {
 
   // ── Create a new lobby ──────────────────────────────────────────
   const [creatingLobby, setCreatingLobby] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createFeeInput, setCreateFeeInput] = useState('');
 
   const handleCreateLobby = useCallback(async () => {
     try {
       setCreatingLobby(true);
+
+      // Build body with optional fee
+      const body: Record<string, unknown> = {};
+      const parsedFee = parseFloat(createFeeInput);
+      if (!isNaN(parsedFee) && parsedFee > 0) {
+        body.feeAmount = createFeeInput.trim();
+      }
+
       const res = await fetch(`${API_BASE}/battle/create`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { battleId: string };
@@ -357,7 +367,7 @@ export default function HomePage() {
       console.error('Failed to create lobby:', err);
       setCreatingLobby(false);
     }
-  }, []);
+  }, [createFeeInput]);
 
   // ── Kick off fetches on mount ─────────────────────────────────
   useEffect(() => {
@@ -386,13 +396,53 @@ export default function HomePage() {
             Open Arenas
           </h2>
           <button
-            onClick={handleCreateLobby}
+            onClick={() => setShowCreateForm((prev) => !prev)}
             disabled={creatingLobby}
             className="rounded-lg border border-gold/40 bg-gold/10 px-5 py-2 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.97] disabled:opacity-60"
           >
-            {creatingLobby ? 'Creating...' : 'Create Lobby'}
+            {creatingLobby ? 'Creating...' : showCreateForm ? 'Cancel' : 'Create Lobby'}
           </button>
         </div>
+
+        {/* Create Lobby Form (with optional fee) */}
+        {showCreateForm && (
+          <div className="mb-4 rounded-lg border border-gold/20 bg-colosseum-surface p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="flex-1">
+                <label
+                  htmlFor="create-fee"
+                  className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-400"
+                >
+                  Entry Fee{' '}
+                  <span className="font-normal normal-case text-gray-600">
+                    (optional, in MON)
+                  </span>
+                </label>
+                <input
+                  id="create-fee"
+                  type="text"
+                  inputMode="decimal"
+                  value={createFeeInput}
+                  onChange={(e) => setCreateFeeInput(e.target.value)}
+                  placeholder="0 (free)"
+                  className="w-full rounded-lg border-2 border-colosseum-surface-light bg-colosseum-bg px-3 py-2 text-sm text-gray-100 placeholder-gray-600 outline-none transition-colors focus:border-gold/60"
+                />
+              </div>
+              <button
+                onClick={handleCreateLobby}
+                disabled={creatingLobby}
+                className="rounded-lg bg-gradient-to-r from-gold-dark via-gold to-gold-light px-6 py-2.5 text-xs font-bold uppercase tracking-wider text-colosseum-bg shadow-lg shadow-gold/20 transition-all hover:shadow-gold/40 active:scale-[0.97] disabled:opacity-60"
+              >
+                {creatingLobby ? 'Creating...' : 'Create Arena'}
+              </button>
+            </div>
+            {createFeeInput && parseFloat(createFeeInput) > 0 && (
+              <p className="mt-2 text-[11px] text-gray-500">
+                Each gladiator must pay {createFeeInput} MON to enter this arena.
+              </p>
+            )}
+          </div>
+        )}
 
         {lobbiesLoading ? (
           <LoadingSkeleton label="open arenas" />
@@ -402,7 +452,7 @@ export default function HomePage() {
               No open arenas. Create one and fight!
             </p>
             <button
-              onClick={handleCreateLobby}
+              onClick={() => setShowCreateForm(true)}
               disabled={creatingLobby}
               className="rounded-lg border border-gold/40 bg-gold/10 px-8 py-3 text-sm font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60"
             >

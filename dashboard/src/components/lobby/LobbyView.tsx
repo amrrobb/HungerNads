@@ -38,6 +38,7 @@ export default function LobbyView({ battleId }: LobbyViewProps) {
   const [maxPlayers, setMaxPlayers] = useState(8);
   const [status, setStatus] = useState<"LOBBY" | "COUNTDOWN">("LOBBY");
   const [countdownEndsAt, setCountdownEndsAt] = useState<string | null>(null);
+  const [feeAmount, setFeeAmount] = useState<string>('0');
   const [hasJoined, setHasJoined] = useState(false);
   const [battleStarting, setBattleStarting] = useState(false);
 
@@ -63,6 +64,7 @@ export default function LobbyView({ battleId }: LobbyViewProps) {
         setMaxPlayers(e.data.maxPlayers);
         setStatus(e.data.status);
         setCountdownEndsAt(e.data.countdownEndsAt ?? null);
+        if (e.data.feeAmount) setFeeAmount(e.data.feeAmount);
         return;
       }
 
@@ -150,6 +152,13 @@ export default function LobbyView({ battleId }: LobbyViewProps) {
           Arena #{battleId.slice(0, 8)} &mdash;{" "}
           {agents.length}/{maxPlayers} gladiators
         </p>
+        {feeAmount !== '0' && (
+          <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-gold/30 bg-gold/10 px-3 py-1">
+            <span className="text-xs font-bold text-gold">
+              Entry Fee: {feeAmount} MON
+            </span>
+          </div>
+        )}
 
         {/* Connection indicator */}
         <div className="mt-2 flex items-center justify-center gap-1.5">
@@ -219,6 +228,7 @@ export default function LobbyView({ battleId }: LobbyViewProps) {
             battleId={battleId}
             onJoined={handleJoined}
             disabled={false}
+            feeAmount={feeAmount}
           />
         </div>
       ) : hasJoined ? (

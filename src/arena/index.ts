@@ -50,6 +50,7 @@ export {
   validateMove,
   executeMove,
   buildSpatialContext,
+  buildEnrichedSpatialContext,
 } from './grid';
 export type { HexCoord, ArenaHex, MoveResult } from './grid';
 

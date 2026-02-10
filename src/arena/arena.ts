@@ -32,6 +32,7 @@ import {
   placeAgent,
   removeAgent as removeAgentFromGrid,
   getEmptyTiles,
+  getOuterRingTiles,
   getTilesByType,
   serializeGrid,
   hexKey,
@@ -44,10 +45,19 @@ import {
   addBuff,
 } from './items';
 import type { ItemBuff, BuffTickResult } from './items';
-import type { BattleStatus } from './types/status';
+import type { BattleStatus, BattlePhase } from './types/status';
+import {
+  computePhaseConfig,
+  getCurrentPhase,
+  type PhaseConfig,
+  type PhaseEntry,
+} from './phases';
 
 // Re-export BattleStatus so consumers can import from arena.ts or arena/index.ts
 export type { BattleStatus } from './types/status';
+export type { BattlePhase } from './types/status';
+export type { PhaseConfig, PhaseEntry } from './phases';
+export { computePhaseConfig, getCurrentPhase } from './phases';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,6 +79,10 @@ export interface BattleState {
   lobbyAgents?: LobbyAgent[];
   /** ISO timestamp when countdown ends (only present in COUNTDOWN status). */
   countdownEndsAt?: string | null;
+  /** Current battle phase (only present during ACTIVE status). */
+  currentPhase?: BattlePhase;
+  /** Phase configuration for this battle (set when battle starts). */
+  phaseConfig?: PhaseConfig;
 }
 
 /** Record of an eliminated agent, produced when eliminateAgent() is called. */
@@ -140,7 +154,7 @@ export interface BattleConfig {
 }
 
 export const DEFAULT_BATTLE_CONFIG: BattleConfig = {
-  maxEpochs: 10,
+  maxEpochs: 8, // Default for 5 agents (computed dynamically via computePhaseConfig at battle start)
   epochIntervalMs: 5 * 60 * 1000, // 5 minutes
   initialStatus: 'PENDING',
   countdownDurationMs: 30_000, // 30 seconds
@@ -201,6 +215,12 @@ export class ArenaManager {
   /** ISO timestamp when the battle was cancelled (set by cancelBattle). */
   public cancelledAt: string | null;
 
+  /**
+   * Phase configuration for this battle. Computed from player count when the
+   * battle starts. Null before battle is ACTIVE.
+   */
+  public phaseConfig: PhaseConfig | null;
+
   private eliminations: EliminationRecord[];
 
   constructor(battleId: string, config: Partial<BattleConfig> = {}) {
@@ -217,6 +237,7 @@ export class ArenaManager {
     this.agentBuffs = new Map();
     this.lobbyAgents = new Map();
     this.countdownEndsAt = null;
+    this.phaseConfig = null;
   }
 
   // -------------------------------------------------------------------------
@@ -258,10 +279,10 @@ export class ArenaManager {
       agentIds.push(id);
     }
 
-    // Place agents on random tiles across the 37-tile hex grid
-    const allTiles = getEmptyTiles(this.grid);
-    // Shuffle all tiles for random placement
-    const shuffled = [...allTiles];
+    // Place agents on outer ring (Lv1, ring 3) tiles only — 18 EDGE tiles available
+    const outerTiles = getOuterRingTiles(this.grid);
+    // Shuffle outer tiles for random placement
+    const shuffled = [...outerTiles];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -371,9 +392,9 @@ export class ArenaManager {
       agentIds.push(lobbyAgent.id);
     }
 
-    // Place agents on random tiles across the 37-tile hex grid
-    const allTiles = getEmptyTiles(this.grid);
-    const shuffled = [...allTiles];
+    // Place agents on outer ring (Lv1, ring 3) tiles only — 18 EDGE tiles available
+    const outerTiles = getOuterRingTiles(this.grid);
+    const shuffled = [...outerTiles];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
@@ -447,6 +468,9 @@ export class ArenaManager {
     // Spawn lobby agents onto the grid
     this.spawnFromLobby();
 
+    // Compute phase config from the number of spawned agents
+    this.phaseConfig = computePhaseConfig(this.agents.size);
+
     this.status = 'ACTIVE';
     this.startedAt = new Date();
 
@@ -481,6 +505,9 @@ export class ArenaManager {
     if (this.status !== 'BETTING_OPEN') {
       throw new Error(`Cannot start battle: status is ${this.status}, expected BETTING_OPEN`);
     }
+    // Compute phase config from agent count
+    this.phaseConfig = computePhaseConfig(this.agents.size);
+
     this.status = 'ACTIVE';
     this.startedAt = new Date();
 
@@ -500,6 +527,9 @@ export class ArenaManager {
     if (this.agents.size === 0) {
       throw new Error('Cannot start battle: no agents spawned');
     }
+    // Compute phase config from agent count
+    this.phaseConfig = computePhaseConfig(this.agents.size);
+
     this.status = 'ACTIVE';
     this.startedAt = new Date();
 
@@ -725,6 +755,17 @@ export class ArenaManager {
     if (this.status === 'LOBBY' || this.status === 'COUNTDOWN') {
       state.lobbyAgents = Array.from(this.lobbyAgents.values());
       state.countdownEndsAt = this.countdownEndsAt;
+    }
+
+    // Include phase info during ACTIVE status
+    if (this.phaseConfig && this.epochCount > 0) {
+      const phase = getCurrentPhase(this.epochCount, this.phaseConfig);
+      state.currentPhase = phase.name;
+      state.phaseConfig = this.phaseConfig;
+    } else if (this.phaseConfig) {
+      // Battle is ACTIVE but no epochs yet — show first phase
+      state.currentPhase = this.phaseConfig.phases[0]?.name;
+      state.phaseConfig = this.phaseConfig;
     }
 
     return state;

@@ -366,3 +366,194 @@ export function buildSpatialContext(
 
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------------------
+// Enriched spatial context for LLM prompts (phase + storm + items + agents)
+// ---------------------------------------------------------------------------
+
+import {
+  getDistance as hexGridDistance,
+  getTileLevel,
+  getTilesInRange,
+  getSafeTiles,
+  isStormTile,
+} from './hex-grid';
+import type { HexGridState, HexTile } from './hex-grid';
+import type { BattlePhase } from './types/status';
+import type { PhaseConfig, PhaseEntry } from './phases';
+import { getCurrentPhase, getEpochsRemainingInPhase } from './phases';
+
+/** Info about a nearby agent for the spatial context. */
+interface NearbyAgentInfo {
+  name: string;
+  class: string;
+  hp: number;
+  maxHp: number;
+  position: HexCoord;
+  distance: number;
+}
+
+/** Info about a nearby item for the spatial context. */
+interface NearbyItemInfo {
+  type: string;
+  position: HexCoord;
+  distance: number;
+}
+
+/**
+ * Build an enriched spatial context string for an agent's LLM prompt.
+ *
+ * Includes:
+ * - Current position, tile level, distance to center
+ * - Current phase, epochs remaining in phase, combat enabled
+ * - Storm info: safe tile count, storm tile count, whether the agent is in storm
+ * - Nearby items within 2 tiles (type and position)
+ * - Nearby agents within 2 tiles (name, class, HP, position, distance)
+ * - Empty adjacent hexes for movement
+ *
+ * Returns a formatted multi-line string for injection into the LLM system prompt.
+ */
+export function buildEnrichedSpatialContext(
+  agentId: string,
+  agentPosition: HexCoord | null,
+  grid: HexGridState,
+  allAgents: { id: string; name: string; class: string; hp: number; maxHp: number; position?: HexCoord | null }[],
+  epochNumber: number,
+  phaseConfig: PhaseConfig | null,
+): string {
+  if (!agentPosition) return 'POSITION: Unknown (not on grid)';
+
+  const center: HexCoord = { q: 0, r: 0 };
+  const distToCenter = hexGridDistance(agentPosition, center);
+  const tileLevel = getTileLevel(agentPosition);
+
+  // Phase info
+  let phaseBlock = '';
+  let currentPhaseName: BattlePhase | null = null;
+  let stormBlock = '';
+
+  if (phaseConfig) {
+    const currentPhase = getCurrentPhase(epochNumber, phaseConfig);
+    const epochsRemaining = getEpochsRemainingInPhase(epochNumber, phaseConfig);
+    currentPhaseName = currentPhase.name;
+
+    phaseBlock = [
+      `CURRENT PHASE: ${currentPhase.name} (epoch ${epochNumber}, ${epochsRemaining} epoch(s) left in phase)`,
+      `Combat: ${currentPhase.combatEnabled ? 'ENABLED' : 'DISABLED (no attacks this phase)'}`,
+    ].join('\n');
+
+    // Storm info
+    if (currentPhase.name !== 'LOOT') {
+      const safeTiles = getSafeTiles(currentPhase.name, grid);
+      const totalTiles = grid.tiles.size;
+      const stormTileCount = totalTiles - safeTiles.length;
+      const agentInStorm = isStormTile(agentPosition, currentPhase.name);
+
+      const stormLines: string[] = [
+        `STORM: ${stormTileCount} tiles dangerous, ${safeTiles.length} tiles safe.`,
+      ];
+      if (agentInStorm) {
+        stormLines.push('WARNING: YOU ARE IN THE STORM! Move to a safe tile or take damage!');
+      } else {
+        stormLines.push('You are on a safe tile.');
+      }
+
+      // Upcoming storm intensification
+      if (epochsRemaining <= 1 && currentPhase.name !== 'FINAL_STAND') {
+        const phaseOrder: BattlePhase[] = ['LOOT', 'HUNT', 'BLOOD', 'FINAL_STAND'];
+        const nextIdx = phaseOrder.indexOf(currentPhase.name) + 1;
+        if (nextIdx < phaseOrder.length) {
+          const nextPhase = phaseOrder[nextIdx];
+          const nextSafe = getSafeTiles(nextPhase, grid);
+          stormLines.push(
+            `STORM WARNING: Next phase (${nextPhase}) reduces safe tiles to ${nextSafe.length}! Move toward center!`,
+          );
+        }
+      }
+
+      stormBlock = stormLines.join('\n');
+    } else {
+      stormBlock = 'STORM: No storm during LOOT phase. All tiles are safe.';
+    }
+  }
+
+  // Nearby agents within 2 tiles
+  const nearbyAgents: NearbyAgentInfo[] = [];
+  for (const other of allAgents) {
+    if (other.id === agentId || !other.position) continue;
+    const dist = hexGridDistance(agentPosition, other.position);
+    if (dist <= 2) {
+      nearbyAgents.push({
+        name: other.name,
+        class: other.class,
+        hp: other.hp,
+        maxHp: other.maxHp,
+        position: other.position,
+        distance: dist,
+      });
+    }
+  }
+  nearbyAgents.sort((a, b) => a.distance - b.distance);
+
+  // Nearby items within 2 tiles
+  const nearbyItems: NearbyItemInfo[] = [];
+  const tilesInRange = getTilesInRange(agentPosition, 2, grid);
+  for (const tile of tilesInRange) {
+    if (tile.items && tile.items.length > 0) {
+      for (const item of tile.items) {
+        const dist = hexGridDistance(agentPosition, tile.coord);
+        nearbyItems.push({
+          type: item.type,
+          position: tile.coord,
+          distance: dist,
+        });
+      }
+    }
+  }
+  nearbyItems.sort((a, b) => a.distance - b.distance);
+
+  // Empty adjacent hexes
+  const adjTiles = getTilesInRange(agentPosition, 1, grid).filter(
+    t => !hexEquals(t.coord, agentPosition) && t.occupantId === null,
+  );
+  const emptyAdj = adjTiles.map(t => {
+    const isSafe = currentPhaseName ? !isStormTile(t.coord, currentPhaseName) : true;
+    return `(${t.coord.q},${t.coord.r}) Lv${t.level}${isSafe ? '' : ' [STORM]'}`;
+  });
+
+  // Build final output
+  const lines: string[] = [
+    `YOUR POSITION: (${agentPosition.q},${agentPosition.r}) tile level Lv${tileLevel}, distance to center: ${distToCenter}`,
+  ];
+
+  if (phaseBlock) lines.push(phaseBlock);
+  if (stormBlock) lines.push(stormBlock);
+
+  if (nearbyAgents.length > 0) {
+    const agentStrings = nearbyAgents.map(a => {
+      const adjTag = a.distance === 1 ? ' [ADJACENT - can attack]' : '';
+      const hpPct = Math.round((a.hp / a.maxHp) * 100);
+      return `  ${a.name} (${a.class}, ${a.hp} HP / ${hpPct}%) at (${a.position.q},${a.position.r}) dist=${a.distance}${adjTag}`;
+    });
+    lines.push(`NEARBY AGENTS (within 2 tiles):\n${agentStrings.join('\n')}`);
+  } else {
+    lines.push('NEARBY AGENTS: None within 2 tiles.');
+  }
+
+  if (nearbyItems.length > 0) {
+    const itemStrings = nearbyItems.map(i =>
+      `  ${i.type} at (${i.position.q},${i.position.r}) dist=${i.distance}`,
+    );
+    lines.push(`NEARBY ITEMS (within 2 tiles):\n${itemStrings.join('\n')}`);
+  } else {
+    lines.push('NEARBY ITEMS: None within 2 tiles.');
+  }
+
+  if (emptyAdj.length > 0) {
+    lines.push(`EMPTY ADJACENT HEXES (can move to): ${emptyAdj.join(', ')}`);
+  } else {
+    lines.push('EMPTY ADJACENT HEXES: None (surrounded).');
+  }
+
+  return lines.join('\n');
+}

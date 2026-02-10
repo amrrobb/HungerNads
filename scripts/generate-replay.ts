@@ -29,6 +29,7 @@ import { execSync, spawn } from 'child_process';
 import { ArenaManager } from '../src/arena/arena';
 import { processEpoch, type EpochResult } from '../src/arena/epoch';
 import { PriceFeed } from '../src/arena/price-feed';
+import { computePhaseConfig } from '../src/arena/phases';
 import type { MarketData, ArenaAgentState } from '../src/agents/schemas';
 import type { DeathCause } from '../src/arena/death';
 import { extractReplayData } from '../src/replay/extract';
@@ -198,7 +199,8 @@ ${C.bold}EXAMPLES:${C.reset}
 async function runBattle(): Promise<ReplayData> {
   logStep('Running battle simulation...');
 
-  const maxEpochs = 10;
+  const agentCount = 5; // Default: one of each class
+  const maxEpochs = computePhaseConfig(agentCount).totalEpochs; // 5 agents → 8 epochs
   const arena = new ArenaManager(crypto.randomUUID(), { maxEpochs, epochIntervalMs: 0 });
   arena.spawnAgents();
   arena.startBattleImmediate();

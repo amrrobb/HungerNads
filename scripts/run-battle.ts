@@ -34,6 +34,8 @@ import type { HexGridState, HexTile, HexCoord } from '../src/arena/hex-grid';
 import { hexKey, getDistance } from '../src/arena/hex-grid';
 import type { ItemPickupResult, TrapTriggerResult } from '../src/arena/items';
 import type { MoveResult } from '../src/arena/grid';
+import type { BattlePhase } from '../src/arena/types/status';
+import { computePhaseConfig } from '../src/arena/phases';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ANSI Color Utilities (no dependencies needed)
@@ -443,12 +445,29 @@ function printSectionHeader(text: string): void {
   console.log(c('brightYellow', `  ${line}`));
 }
 
-function printEpochHeader(epoch: number, maxEpochs: number): void {
+function printEpochHeader(epoch: number, maxEpochs: number, phase?: BattlePhase): void {
   const line = '\u2550'.repeat(60);
+  const phaseStr = phase ? `  [${phase}]` : '';
   console.log('');
   console.log(c('brightWhite', `\u2554${line}\u2557`));
-  console.log(c('brightWhite', `\u2551  ${c('bold', `EPOCH ${epoch}`)}${c('gray', ` / ${maxEpochs} max`)}${''.padEnd(38)}\u2551`));
+  console.log(c('brightWhite', `\u2551  ${c('bold', `EPOCH ${epoch}`)}${c('gray', ` / ${maxEpochs} max`)}${c('brightCyan', phaseStr)}${''.padEnd(Math.max(0, 38 - phaseStr.length))}\u2551`));
   console.log(c('brightWhite', `\u255A${line}\u255D`));
+}
+
+const PHASE_STYLE: Record<string, { icon: string; color: keyof typeof C; announcement: string }> = {
+  LOOT:        { icon: '\uD83C\uDFF0', color: 'brightGreen',   announcement: 'LOOT PHASE - Grab what you can! No combat!' },
+  HUNT:        { icon: '\uD83C\uDFF9', color: 'brightYellow',  announcement: 'THE HUNT BEGINS - Combat enabled! Storm closes outer ring!' },
+  BLOOD:       { icon: '\uD83E\uDE78', color: 'brightRed',     announcement: 'BLOOD PHASE - Storm tightens! Kill or be killed!' },
+  FINAL_STAND: { icon: '\uD83D\uDC80', color: 'brightMagenta', announcement: 'FINAL STAND - Only center is safe! Last nad standing wins!' },
+};
+
+function printPhaseTransition(from: BattlePhase, to: BattlePhase): void {
+  const style = PHASE_STYLE[to] ?? { icon: '?', color: 'white' as const, announcement: to };
+  const line = '\u2501'.repeat(56);
+  console.log('');
+  console.log(c(style.color, `  \u250F${line}\u2513`));
+  console.log(c(style.color, `  \u2503  ${style.icon} ${c('bold', style.announcement)}${''.padEnd(Math.max(0, 48 - style.announcement.length))}\u2503`));
+  console.log(c(style.color, `  \u2517${line}\u251B`));
 }
 
 function printMarketData(data: MarketData): void {
@@ -645,6 +664,38 @@ function printBleed(result: EpochResult): void {
   const totalBleed = result.bleedResults.reduce((sum, r) => sum + r.bleedAmount, 0);
   console.log('');
   console.log(`  ${c('gray', `\uD83E\uDE78 -2% bleed applied to all (total: -${Math.round(totalBleed)} HP drained)`)}`);
+}
+
+function printStormDamage(
+  result: EpochResult,
+  agentLookup: Map<string, { name: string; class: string }>,
+): void {
+  if (!result.stormDamageResults || result.stormDamageResults.length === 0) return;
+
+  console.log('');
+  console.log(c('bold', c('brightMagenta', '  STORM DAMAGE:')));
+
+  for (const sd of result.stormDamageResults) {
+    const info = agentLookup.get(sd.agentId);
+    if (!info) continue;
+
+    const tag = agentTag(info.name, info.class);
+    const dmgStr = c('brightMagenta', `-${sd.damage} HP`);
+    const hpStr = c('gray', `(${sd.hpAfter} HP remaining)`);
+    const tileStr = c('gray', `@ (${sd.tile.q},${sd.tile.r})`);
+
+    console.log(
+      `    ${tag} ${c('brightMagenta', '\u26A1 STORM!')} ${dmgStr} ${tileStr} ${hpStr}`,
+    );
+  }
+
+  // Show storm tile count
+  if (result.stormTiles && result.stormTiles.length > 0) {
+    const safeCount = 37 - result.stormTiles.length;
+    console.log(
+      `    ${c('gray', `\u26C8 ${result.stormTiles.length} tiles in storm, ${safeCount} safe`)}`,
+    );
+  }
 }
 
 function printDeaths(result: EpochResult): void {
@@ -872,7 +923,9 @@ async function runBattle(): Promise<void> {
   console.log(c('gray', `  Speed: ${process.env.BATTLE_SPEED ?? 'fast'} (set BATTLE_SPEED=instant|fast|slow)`));
 
   // ── Create arena ─────────────────────────────────────────────────────────
-  const maxEpochs = 10;
+  // maxEpochs computed dynamically from agent count via phase system
+  const agentCount = 5; // Default: one of each class
+  const maxEpochs = computePhaseConfig(agentCount).totalEpochs; // 5 agents → 8 epochs
   const arena = new ArenaManager(crypto.randomUUID(), { maxEpochs, epochIntervalMs: 0 });
 
   // ── Spawn agents ─────────────────────────────────────────────────────────
@@ -915,6 +968,21 @@ async function runBattle(): Promise<void> {
   console.log('');
   console.log(c('gray', '  Agents spread across the outer ring. Cornucopia loot glitters in the center.'));
   console.log(c('gray', '  The crowd roars. The battle begins.'));
+
+  // Display phase config
+  if (arena.phaseConfig) {
+    const pc = arena.phaseConfig;
+    console.log('');
+    console.log(c('bold', `  BATTLE PHASES (${pc.totalEpochs} epochs):`));
+    for (const phase of pc.phases) {
+      const style = PHASE_STYLE[phase.name] ?? { icon: '?', color: 'white' as const, announcement: '' };
+      const combatStr = phase.combatEnabled ? c('brightRed', 'COMBAT ON') : c('brightGreen', 'NO COMBAT');
+      console.log(
+        `    ${style.icon} ${c(style.color, phase.name.padEnd(12))} ` +
+        `Epochs ${phase.startEpoch}-${phase.endEpoch} | ${combatStr} | Storm: ${phase.stormRing === -1 ? 'none' : `ring ${phase.stormRing}`}`,
+      );
+    }
+  }
 
   // ── Price feed (simulated for mock mode, real for LLM mode) ──────────────
   // Use simulated prices always for the CLI - real Pyth prices are slow and
@@ -972,8 +1040,19 @@ async function runBattle(): Promise<void> {
     }
 
     // ── Print epoch play-by-play ──────────────────────────────────────────
-    printEpochHeader(result.epochNumber, maxEpochs);
+
+    // Phase transition banner (if phase changed this epoch)
+    if (result.phaseChanged) {
+      printPhaseTransition(result.phaseChanged.from, result.phaseChanged.to);
+    }
+
+    printEpochHeader(result.epochNumber, maxEpochs, result.currentPhase);
     printMarketData(result.marketData);
+
+    // Show combat status for current phase
+    if (result.currentPhase === 'LOOT') {
+      console.log(`  ${c('brightGreen', '\uD83D\uDEE1\uFE0F LOOT PHASE - Combat is DISABLED')}`);
+    }
 
     // Movement phase (new: hex grid movement)
     printMovementPhase(result, agentLookup);
@@ -991,6 +1070,9 @@ async function runBattle(): Promise<void> {
     printItemSpawns(result);
 
     printBleed(result);
+
+    // Storm damage (after bleed, before death check)
+    printStormDamage(result, agentLookup);
 
     // Buff expirations
     printBuffStatus(result, agentLookup);

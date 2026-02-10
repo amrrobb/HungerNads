@@ -26,10 +26,12 @@ import {
 } from '../api/websocket';
 import { createNadFunClient, type NadFunClient, type CurveStream } from '../chain/nadfun';
 import type { Address } from 'viem';
-import { ArenaManager } from '../arena/arena';
+import { ArenaManager, computePhaseConfig, type PhaseConfig } from '../arena/arena';
 import { processEpoch as runEpoch, type EpochResult } from '../arena/epoch';
+import type { BattlePhase } from '../arena/types/status';
 import { PriceFeed } from '../arena/price-feed';
-import { placeAgent } from '../arena/hex-grid';
+import { placeAgent, getStormTileCoords } from '../arena/hex-grid';
+import { getCurrentPhase } from '../arena/phases';
 import { WarriorAgent } from '../agents/warrior';
 import { TraderAgent } from '../agents/trader';
 import { SurvivorAgent } from '../agents/survivor';
@@ -69,7 +71,7 @@ export interface BattleAgent {
 
 /** Per-battle configuration passed from POST /battle/create. */
 export interface BattleConfig {
-  /** Max epochs before timeout (default 100). */
+  /** Max epochs before timeout. Computed dynamically from agent count via computePhaseConfig(). */
   maxEpochs: number;
   /** Epochs to keep betting open (default DEFAULT_BETTING_LOCK_AFTER_EPOCH). */
   bettingWindowEpochs: number;
@@ -80,7 +82,7 @@ export interface BattleConfig {
 }
 
 export const DEFAULT_BATTLE_CONFIG: BattleConfig = {
-  maxEpochs: 10,
+  maxEpochs: 8, // Default for 5 agents (overridden by computePhaseConfig at battle start)
   bettingWindowEpochs: DEFAULT_BETTING_LOCK_AFTER_EPOCH,
   assets: ['ETH', 'BTC', 'SOL', 'MON'],
   feeAmount: '0',
@@ -100,6 +102,10 @@ export interface BattleState {
   config: BattleConfig;
   /** ISO timestamp when countdown ends (set when 5th agent joins). */
   countdownEndsAt: string | null;
+  /** Current battle phase (only present during ACTIVE status). */
+  currentPhase?: BattlePhase;
+  /** Phase configuration computed from player count (set when battle starts). */
+  phaseConfig?: PhaseConfig;
 }
 
 /**
@@ -143,9 +149,10 @@ const COUNTDOWN_DURATION_MS = 60_000;
 // For demo: set EPOCH_INTERVAL_MS=15000 (15 seconds) in .dev.vars
 const DEFAULT_EPOCH_INTERVAL_MS = 300_000;
 
-// Maximum epochs before a battle is force-completed by timeout.
-// If 2+ agents are alive at this point, the one with the highest HP wins.
-const MAX_EPOCHS = 10;
+// Safety cap: absolute maximum epochs before a battle is force-completed.
+// In practice, battles use computePhaseConfig(agentCount).totalEpochs (8–14),
+// but this cap guards against runaway battles if phaseConfig is missing.
+const MAX_EPOCHS_SAFETY_CAP = 50;
 
 // ─── Agent Factory ────────────────────────────────────────────────
 
@@ -199,8 +206,12 @@ function createAgentFromState(agent: BattleAgent, llmKeys?: LLMKeys): BaseAgent 
  * adjacency, and item pickups work correctly across epochs.
  */
 function reconstructArena(battleState: BattleState, llmKeys?: LLMKeys): ArenaManager {
+  // Use phaseConfig.totalEpochs if available (dynamic), fall back to config, then safety cap
+  const maxEpochs = battleState.phaseConfig?.totalEpochs
+    ?? battleState.config?.maxEpochs
+    ?? MAX_EPOCHS_SAFETY_CAP;
   const arena = new ArenaManager(battleState.battleId, {
-    maxEpochs: battleState.config?.maxEpochs ?? DEFAULT_BATTLE_CONFIG.maxEpochs,
+    maxEpochs,
     epochIntervalMs: DEFAULT_EPOCH_INTERVAL_MS,
   });
 
@@ -218,6 +229,15 @@ function reconstructArena(battleState: BattleState, llmKeys?: LLMKeys): ArenaMan
     if (agent.position && agent.isAlive) {
       arena.grid = placeAgent(agent.id, agent.position, arena.grid);
     }
+  }
+
+  // Restore phase config from stored state, or recompute from agent count
+  if (battleState.phaseConfig) {
+    arena.phaseConfig = battleState.phaseConfig;
+  } else {
+    // Backward compat: compute phase config from current agent count
+    const agentCount = Object.keys(battleState.agents).length;
+    arena.phaseConfig = computePhaseConfig(agentCount);
   }
 
   return arena;
@@ -247,6 +267,11 @@ function syncEpochResult(battleState: BattleState, result: EpochResult): void {
   // Sync kills and epochsSurvived from the arena's in-memory agents
   // (these aren't in agentStates but are tracked by the engine)
   // We'll handle this via the arena instance in processEpoch()
+
+  // Update current phase from epoch result
+  if (result.currentPhase) {
+    battleState.currentPhase = result.currentPhase;
+  }
 
   if (result.battleComplete) {
     battleState.status = 'COMPLETED';
@@ -324,6 +349,10 @@ export class ArenaDO implements DurableObject {
     // Merge caller config with defaults
     const config: BattleConfig = { ...DEFAULT_BATTLE_CONFIG, ...battleConfig };
 
+    // Compute phase config from agent count and override maxEpochs
+    const phaseConfig = computePhaseConfig(agentIds.length);
+    config.maxEpochs = phaseConfig.totalEpochs;
+
     const battleState: BattleState = {
       battleId,
       status: 'ACTIVE',
@@ -335,6 +364,8 @@ export class ArenaDO implements DurableObject {
       bettingPhase: 'OPEN',
       config,
       countdownEndsAt: null,
+      currentPhase: phaseConfig.phases[0]?.name,
+      phaseConfig,
     };
 
     // Build UUID → numeric agent ID mapping for on-chain calls.
@@ -471,7 +502,11 @@ export class ArenaDO implements DurableObject {
     // Store the serialized grid snapshot so that spectators connecting
     // between epochs receive the latest tile/item/position state.
     try {
-      const gridSnapshot = gridStateToEvent(arena.grid);
+      // Include storm tiles so reconnecting clients see the storm overlay
+      const stormTiles = result.stormTiles && result.stormTiles.length > 0
+        ? result.stormTiles
+        : undefined;
+      const gridSnapshot = gridStateToEvent(arena.grid, stormTiles);
       await this.state.storage.put('gridSnapshot', gridSnapshot);
     } catch (err) {
       console.error('[ArenaDO] Failed to persist grid snapshot:', err);
@@ -515,7 +550,7 @@ export class ArenaDO implements DurableObject {
     // ── Max epochs timeout guard ──────────────────────────────────
     // If the battle didn't end naturally but we've hit the epoch limit,
     // force-complete by declaring the highest-HP agent the winner.
-    const maxEpochs = battleState.config?.maxEpochs ?? MAX_EPOCHS;
+    const maxEpochs = battleState.config?.maxEpochs ?? MAX_EPOCHS_SAFETY_CAP;
     if (!result.battleComplete && battleState.epoch >= maxEpochs) {
       console.log(
         `[ArenaDO] Battle ${battleState.battleId} hit max epochs (${maxEpochs}) — forcing timeout win`,
@@ -755,9 +790,13 @@ export class ArenaDO implements DurableObject {
     const events = epochToEvents(epochResult);
 
     // Append a grid_state snapshot after the epoch events so the client
-    // has a consistent view of tile positions and items.
+    // has a consistent view of tile positions and items (including storm tiles).
     if (arena) {
-      events.push(gridStateToEvent(arena.grid));
+      // Include stormTiles from the epoch result (computed during storm damage step)
+      const stormTiles = epochResult.stormTiles && epochResult.stormTiles.length > 0
+        ? epochResult.stormTiles
+        : undefined;
+      events.push(gridStateToEvent(arena.grid, stormTiles));
     }
 
     broadcastEvents(sockets, events);
@@ -962,8 +1001,9 @@ export class ArenaDO implements DurableObject {
     );
 
     // ── Create ArenaManager and populate lobby agents ─────────────
+    // maxEpochs will be recomputed from phaseConfig after agents are spawned
     const arena = new ArenaManager(battleState.battleId, {
-      maxEpochs: battleState.config?.maxEpochs ?? DEFAULT_BATTLE_CONFIG.maxEpochs,
+      maxEpochs: MAX_EPOCHS_SAFETY_CAP, // placeholder — overridden by computePhaseConfig in startBattleFromLobby
       epochIntervalMs: this.epochIntervalMs,
       initialStatus: 'LOBBY',
     });
@@ -1016,6 +1056,13 @@ export class ArenaDO implements DurableObject {
     battleState.agents = agents;
     battleState.startedAt = new Date().toISOString();
     battleState.countdownEndsAt = null;
+    // Store phase config computed by ArenaManager during startBattleFromLobby
+    battleState.phaseConfig = arena.phaseConfig ?? undefined;
+    battleState.currentPhase = arena.phaseConfig?.phases[0]?.name;
+    // Override maxEpochs from computed phase config (dynamic based on agent count)
+    if (arena.phaseConfig) {
+      battleState.config.maxEpochs = arena.phaseConfig.totalEpochs;
+    }
 
     // Build UUID → numeric agent ID mapping for on-chain calls
     const chainAgentMap: Record<string, number> = {};
@@ -1124,6 +1171,7 @@ export class ArenaDO implements DurableObject {
                 })),
                 playerCount: lobbyMeta.lobbyAgents.length,
                 maxPlayers: lobbyMeta.maxPlayers,
+                feeAmount: lobbyMeta.feeAmount,
               },
             };
             server.send(JSON.stringify(lobbyEvent));
@@ -1156,6 +1204,36 @@ export class ArenaDO implements DurableObject {
             },
           };
           server.send(JSON.stringify(phaseEvent));
+
+          // Send current battle phase so PhaseIndicator works on connect
+          if (battleState.currentPhase && battleState.phaseConfig) {
+            const currentPhaseEntry = getCurrentPhase(
+              battleState.epoch || 1,
+              battleState.phaseConfig,
+            );
+            const epochsRemaining = Math.max(
+              0,
+              currentPhaseEntry.endEpoch - (battleState.epoch || 1) + 1,
+            );
+            const PHASE_STORM_RING: Record<string, number> = {
+              LOOT: -1, HUNT: 3, BLOOD: 2, FINAL_STAND: 1,
+            };
+            const PHASE_COMBAT: Record<string, boolean> = {
+              LOOT: false, HUNT: true, BLOOD: true, FINAL_STAND: true,
+            };
+            const battlePhaseEvent: BattleEvent = {
+              type: 'phase_change',
+              data: {
+                phase: currentPhaseEntry.name,
+                previousPhase: currentPhaseEntry.name, // no transition, just current state
+                stormRing: PHASE_STORM_RING[currentPhaseEntry.name] ?? -1,
+                epochsRemaining,
+                combatEnabled: PHASE_COMBAT[currentPhaseEntry.name] ?? true,
+                epochNumber: battleState.epoch || 1,
+              },
+            };
+            server.send(JSON.stringify(battlePhaseEvent));
+          }
 
           // Send latest grid state (tile positions, items, agent positions)
           const gridSnapshot = await this.state.storage.get<BattleEvent>('gridSnapshot');
@@ -1342,6 +1420,7 @@ export class ArenaDO implements DurableObject {
           playerCount: lobbyMeta.lobbyAgents.length,
           maxPlayers: lobbyMeta.maxPlayers,
           countdownEndsAt: battleState.countdownEndsAt ?? undefined,
+          feeAmount: lobbyMeta.feeAmount,
         },
       });
 

@@ -20,6 +20,7 @@
 
 import type { BaseAgent } from '../agents/base-agent';
 import { getDefaultActions } from '../agents/base-agent';
+import type { FallbackContext } from '../agents/base-agent';
 import type {
   EpochActions,
   HexCoord,
@@ -35,6 +36,14 @@ import {
   type SecretaryResult,
 } from '../agents/secretary';
 import { ArenaManager } from './arena';
+import {
+  getCurrentPhase,
+  detectPhaseTransition,
+  getEpochsRemainingInPhase,
+  type PhaseEntry,
+  type BattlePhase,
+} from './phases';
+import { isStormTile, getStormTileCoords } from './hex-grid';
 import { PriceFeed } from './price-feed';
 import {
   resolvePredictions,
@@ -57,6 +66,7 @@ import {
 import {
   validateMove,
   executeMove,
+  buildEnrichedSpatialContext,
   type MoveResult,
 } from './grid';
 import type { SponsorEffect } from '../betting/sponsorship';
@@ -105,6 +115,31 @@ export interface SponsorBoostResult {
   message: string;
 }
 
+/** Result of storm damage applied to a single agent. */
+export interface StormDamageResult {
+  agentId: string;
+  agentName: string;
+  /** Damage dealt by the storm. */
+  damage: number;
+  /** The tile coordinate where the agent was standing. */
+  tile: { q: number; r: number };
+  /** The battle phase during which the damage was dealt. */
+  phase: BattlePhase;
+  /** Agent's HP after storm damage. */
+  hpAfter: number;
+}
+
+/**
+ * Base storm damage per phase. Scales upward with epochsInPhase.
+ * Formula: actualDamage = BASE * (1 + epochsInPhase * 0.1)
+ */
+const STORM_BASE_DAMAGE: Record<BattlePhase, number> = {
+  LOOT: 0,
+  HUNT: 100,
+  BLOOD: 150,
+  FINAL_STAND: 200,
+};
+
 export interface EpochResult {
   epochNumber: number;
   marketData: MarketData;
@@ -130,6 +165,10 @@ export interface EpochResult {
   combatResults: CombatResult[];
   defendCosts: DefendCostResult[];
   bleedResults: BleedResult[];
+  /** Storm damage applied to agents on dangerous tiles (after bleed, before death). */
+  stormDamageResults: StormDamageResult[];
+  /** Storm tile coordinates for the current phase (for grid_state broadcast). */
+  stormTiles: { q: number; r: number }[];
   deaths: DeathEvent[];
   /** Secretary agent validation reports per agent (corrections, fuzzy matches, etc). */
   secretaryReports: Map<string, SecretaryResult>;
@@ -147,6 +186,12 @@ export interface EpochResult {
   }[];
   battleComplete: boolean;
   winner?: { id: string; name: string; class: string };
+  /** Current battle phase for this epoch (null if no phase config). */
+  currentPhase?: BattlePhase;
+  /** Phase transition that occurred this epoch (null if no transition). */
+  phaseChanged?: { from: BattlePhase; to: BattlePhase } | null;
+  /** Epochs remaining in the current phase (including this epoch). */
+  epochsRemainingInPhase?: number;
 }
 
 // ─── Default final words generator (no LLM needed) ─────────────────────────
@@ -213,6 +258,29 @@ export async function processEpoch(
   arena.incrementEpoch();
   const epochNumber = arena.epochCount;
 
+  // ── Step 0.5: Determine current phase ─────────────────────────────────
+  const phaseConfig = arena.phaseConfig;
+  let currentPhaseEntry: PhaseEntry | null = null;
+  let phaseTransition: { from: BattlePhase; to: BattlePhase } | null = null;
+
+  if (phaseConfig) {
+    currentPhaseEntry = getCurrentPhase(epochNumber, phaseConfig);
+    const transition = detectPhaseTransition(epochNumber - 1, epochNumber, phaseConfig);
+    if (transition) {
+      phaseTransition = { from: transition.from, to: transition.to };
+      console.log(
+        `[Phase] Phase transition: ${transition.from} -> ${transition.to} at epoch ${epochNumber}`,
+      );
+    }
+    console.log(
+      `[Phase] Epoch ${epochNumber}: ${currentPhaseEntry.name} phase ` +
+      `(combat: ${currentPhaseEntry.combatEnabled ? 'ON' : 'OFF'}, ` +
+      `storm ring: ${currentPhaseEntry.stormRing})`,
+    );
+  }
+
+  const combatEnabled = currentPhaseEntry?.combatEnabled ?? true; // default to enabled if no phase config
+
   // ── Step 1: Fetch market data ─────────────────────────────────────────
   const marketData = await priceFeed.fetchPrices();
 
@@ -227,6 +295,28 @@ export async function processEpoch(
   // ── Step 2: Collect agent decisions in parallel ───────────────────────
   const activeAgents = arena.getActiveAgents();
 
+  // Build enriched spatial context for each agent's LLM prompt.
+  // Includes position, tile level, phase, storm boundary, nearby items/agents.
+  const allAgentInfo = arena.getAllAgents().map(a => ({
+    id: a.id,
+    name: a.name,
+    class: a.agentClass,
+    hp: a.hp,
+    maxHp: a.maxHp,
+    position: a.position,
+  }));
+
+  for (const agent of activeAgents) {
+    agent.currentSpatialContext = buildEnrichedSpatialContext(
+      agent.id,
+      agent.position,
+      arena.grid,
+      allAgentInfo,
+      epochNumber,
+      phaseConfig,
+    );
+  }
+
   const arenaState: ArenaState = {
     battleId: arena.battleId,
     epoch: epochNumber,
@@ -234,7 +324,12 @@ export async function processEpoch(
     marketData,
   };
 
-  const { actionsMap: actions, secretaryReports } = await collectDecisions(activeAgents, arenaState);
+  // Build fallback context for phase-aware movement when LLM fails
+  const fallbackCtx: FallbackContext | undefined = currentPhaseEntry
+    ? { phase: currentPhaseEntry.name, grid: arena.grid }
+    : undefined;
+
+  const { actionsMap: actions, secretaryReports } = await collectDecisions(activeAgents, arenaState, fallbackCtx);
 
   // ── Step 2b: Record reasoning as agent thoughts (for spectator feed) ──
   for (const agent of activeAgents) {
@@ -300,72 +395,81 @@ export async function processEpoch(
     }
   }
 
-  // ── Step 4: Resolve combat ────────────────────────────────────────────
-  // Resolve attack targets: actions use agent names, combat needs agent IDs
-  const resolvedActions = resolveAttackTargets(actions, arena);
+  // ── Step 4: Resolve combat (skipped during LOOT phase) ──────────────
+  let combatResults: CombatResult[] = [];
+  let defendCosts: DefendCostResult[] = [];
 
-  // Build combat agent state map from current (post-prediction) HP
-  // Includes active skills for BERSERK/FORTIFY modifiers in combat resolution
-  const combatAgentStates = buildCombatAgentStates(arena);
+  if (combatEnabled) {
+    // Resolve attack targets: actions use agent names, combat needs agent IDs
+    const resolvedActions = resolveAttackTargets(actions, arena);
 
-  // Pass sponsor effects to combat resolver for freeDefend + attackBoost
-  const { combatResults, defendCosts } = resolveCombat(
-    resolvedActions,
-    combatAgentStates,
-    sponsorEffects,
-  );
+    // Build combat agent state map from current (post-prediction) HP
+    // Includes active skills for BERSERK/FORTIFY modifiers in combat resolution
+    const combatAgentStates = buildCombatAgentStates(arena);
 
-  // Apply defend costs (FORTIFY agents skip defend cost)
-  for (const dc of defendCosts) {
-    const agent = arena.getAgent(dc.agentId);
-    if (agent && agent.alive()) {
-      if (agent.skillActiveThisEpoch && agent.getSkillDefinition().name === 'FORTIFY') {
-        // FORTIFY: immune to defend cost too
-        continue;
-      }
-      agent.takeDamage(dc.cost);
-    }
-  }
+    // Pass sponsor effects to combat resolver for freeDefend + attackBoost
+    const combatResolution = resolveCombat(
+      resolvedActions,
+      combatAgentStates,
+      sponsorEffects,
+    );
+    combatResults = combatResolution.combatResults;
+    defendCosts = combatResolution.defendCosts;
 
-  // Apply combat HP changes (triangle system)
-  for (const cr of combatResults) {
-    const attacker = arena.getAgent(cr.attackerId);
-    const target = arena.getAgent(cr.targetId);
-
-    // Apply attacker HP change
-    if (attacker && attacker.alive()) {
-      if (cr.hpChangeAttacker > 0) {
-        attacker.heal(cr.hpChangeAttacker);
-      } else if (cr.hpChangeAttacker < 0) {
-        attacker.takeDamage(Math.abs(cr.hpChangeAttacker));
+    // Apply defend costs (FORTIFY agents skip defend cost)
+    for (const dc of defendCosts) {
+      const agent = arena.getAgent(dc.agentId);
+      if (agent && agent.alive()) {
+        if (agent.skillActiveThisEpoch && agent.getSkillDefinition().name === 'FORTIFY') {
+          // FORTIFY: immune to defend cost too
+          continue;
+        }
+        agent.takeDamage(dc.cost);
       }
     }
 
-    // Apply target HP change
-    if (target && target.alive()) {
-      if (cr.hpChangeTarget > 0) {
-        target.heal(cr.hpChangeTarget);
-      } else if (cr.hpChangeTarget < 0) {
-        target.takeDamage(Math.abs(cr.hpChangeTarget));
+    // Apply combat HP changes (triangle system)
+    for (const cr of combatResults) {
+      const attacker = arena.getAgent(cr.attackerId);
+      const target = arena.getAgent(cr.targetId);
+
+      // Apply attacker HP change
+      if (attacker && attacker.alive()) {
+        if (cr.hpChangeAttacker > 0) {
+          attacker.heal(cr.hpChangeAttacker);
+        } else if (cr.hpChangeAttacker < 0) {
+          attacker.takeDamage(Math.abs(cr.hpChangeAttacker));
+        }
+      }
+
+      // Apply target HP change
+      if (target && target.alive()) {
+        if (cr.hpChangeTarget > 0) {
+          target.heal(cr.hpChangeTarget);
+        } else if (cr.hpChangeTarget < 0) {
+          target.takeDamage(Math.abs(cr.hpChangeTarget));
+        }
+      }
+
+      // Handle betrayal: break alliance on both sides and emit event
+      if (cr.betrayal && attacker && target) {
+        attacker.breakCurrentAlliance();
+        target.breakCurrentAlliance();
+        allianceEvents.push({
+          type: 'BETRAYED',
+          agentId: cr.attackerId,
+          agentName: attacker.name,
+          partnerId: cr.targetId,
+          partnerName: target.name,
+          description: `BETRAYAL! ${attacker.name} stabbed their ally ${target.name} in the back for ${Math.abs(cr.hpChangeTarget)} damage (2x betrayal bonus)!`,
+        });
+        console.log(
+          `[Alliance] BETRAYAL: ${attacker.name} attacked ally ${target.name}! Alliance broken, 2x damage applied.`,
+        );
       }
     }
-
-    // Handle betrayal: break alliance on both sides and emit event
-    if (cr.betrayal && attacker && target) {
-      attacker.breakCurrentAlliance();
-      target.breakCurrentAlliance();
-      allianceEvents.push({
-        type: 'BETRAYED',
-        agentId: cr.attackerId,
-        agentName: attacker.name,
-        partnerId: cr.targetId,
-        partnerName: target.name,
-        description: `BETRAYAL! ${attacker.name} stabbed their ally ${target.name} in the back for ${Math.abs(cr.hpChangeTarget)} damage (2x betrayal bonus)!`,
-      });
-      console.log(
-        `[Alliance] BETRAYAL: ${attacker.name} attacked ally ${target.name}! Alliance broken, 2x damage applied.`,
-      );
-    }
+  } else {
+    console.log(`[Phase] Combat DISABLED during ${currentPhaseEntry?.name ?? 'unknown'} phase — skipping combat resolution`);
   }
 
   // ── Step 4.5: Process SIPHON skill ─────────────────────────────────────
@@ -401,6 +505,54 @@ export async function processEpoch(
         continue;
       }
       agent.takeDamage(br.bleedAmount);
+    }
+  }
+
+  // ── Step 5.5: Apply storm damage ──────────────────────────────────────
+  // Agents standing on storm tiles take phase-dependent damage.
+  // Damage formula: BASE_DAMAGE[phase] * (1 + epochsInPhase * 0.1)
+  // Storm damage is applied after bleed, before death check.
+  const stormDamageResults: StormDamageResult[] = [];
+  let stormTiles: { q: number; r: number }[] = [];
+
+  if (currentPhaseEntry && currentPhaseEntry.name !== 'LOOT') {
+    const phase = currentPhaseEntry.name;
+    const baseDamage = STORM_BASE_DAMAGE[phase];
+    stormTiles = getStormTileCoords(phase, arena.grid);
+
+    if (baseDamage > 0) {
+      // Compute epochsInPhase (0-indexed: first epoch of a phase = 0)
+      const epochsInPhase = epochNumber - currentPhaseEntry.startEpoch;
+      const scaledDamage = Math.round(baseDamage * (1 + epochsInPhase * 0.1));
+
+      for (const agent of arena.getActiveAgents()) {
+        if (!agent.position) continue;
+
+        if (isStormTile(agent.position, phase)) {
+          // FORTIFY: immune to storm damage
+          if (agent.skillActiveThisEpoch && agent.getSkillDefinition().name === 'FORTIFY') {
+            console.log(
+              `[Storm] ${agent.name} is FORTIFIED — immune to storm damage at (${agent.position.q},${agent.position.r})`,
+            );
+            continue;
+          }
+
+          agent.takeDamage(scaledDamage);
+          stormDamageResults.push({
+            agentId: agent.id,
+            agentName: agent.name,
+            damage: scaledDamage,
+            tile: { q: agent.position.q, r: agent.position.r },
+            phase,
+            hpAfter: agent.hp,
+          });
+
+          console.log(
+            `[Storm] ${agent.name} takes ${scaledDamage} storm damage at (${agent.position.q},${agent.position.r}) ` +
+            `[${phase} phase, epoch ${epochsInPhase} in phase] -> ${agent.hp} HP`,
+          );
+        }
+      }
     }
   }
 
@@ -550,11 +702,18 @@ export async function processEpoch(
     combatResults,
     defendCosts,
     bleedResults,
+    stormDamageResults,
+    stormTiles,
     deaths,
     secretaryReports,
     agentStates,
     battleComplete,
     winner,
+    currentPhase: currentPhaseEntry?.name,
+    phaseChanged: phaseTransition,
+    epochsRemainingInPhase: phaseConfig && currentPhaseEntry
+      ? getEpochsRemainingInPhase(epochNumber, phaseConfig)
+      : undefined,
   };
 }
 
@@ -619,6 +778,7 @@ function applySponsorBoosts(
 async function collectDecisions(
   agents: BaseAgent[],
   arenaState: ArenaState,
+  fallbackCtx?: FallbackContext,
 ): Promise<{ actionsMap: Map<string, EpochActions>; secretaryReports: Map<string, SecretaryResult> }> {
   const results = await Promise.allSettled(
     agents.map(async (agent) => {
@@ -630,7 +790,7 @@ async function collectDecisions(
           `[Epoch] Agent ${agent.name} (${agent.id}) decide() failed:`,
           err,
         );
-        rawActions = getDefaultActions(agent);
+        rawActions = getDefaultActions(agent, fallbackCtx);
       }
 
       // Run secretary validation

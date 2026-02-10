@@ -24,6 +24,7 @@ import type { DeathEvent } from '../arena/death';
 import type { MarketData, AllianceEvent as AllianceEventData } from '../agents/schemas';
 import type { CurveEvent } from '../chain/nadfun';
 import type { TileType, TileLevel, ItemType } from '../arena/types/hex';
+import type { BattlePhase } from '../arena/types/status';
 import type { HexGridState } from '../arena/hex-grid';
 
 // ─── Event Types ──────────────────────────────────────────────────────────────
@@ -267,6 +268,8 @@ export interface GridStateEvent {
       items: { id: string; type: ItemType }[];
     }[];
     agentPositions: Record<string, { q: number; r: number }>;
+    /** Storm tiles for the current phase. Empty during LOOT. */
+    stormTiles?: { q: number; r: number }[];
   };
 }
 
@@ -349,6 +352,7 @@ export interface LobbyUpdateEvent {
     playerCount: number;
     maxPlayers: number;
     countdownEndsAt?: string;
+    feeAmount?: string;
   };
 }
 
@@ -368,6 +372,48 @@ export interface BattleStartingEvent {
       position: { q: number; r: number };
     }>;
     startsAt: number;
+  };
+}
+
+/**
+ * Emitted when the battle transitions to a new phase.
+ * Creates dramatic moments: "THE HUNT BEGINS!", "BLOOD PHASE!", "FINAL STAND!"
+ */
+export interface PhaseChangeEvent {
+  type: 'phase_change';
+  data: {
+    /** The new phase that just started. */
+    phase: BattlePhase;
+    /** The previous phase that just ended. */
+    previousPhase: BattlePhase;
+    /** Storm ring level for the new phase (-1=none, 3=Lv1, 2=Lv1+Lv2, 1=Lv1+Lv2+Lv3). */
+    stormRing: number;
+    /** Epochs remaining in the new phase. */
+    epochsRemaining: number;
+    /** Whether combat is enabled in the new phase. */
+    combatEnabled: boolean;
+    /** Epoch number when this transition occurred. */
+    epochNumber: number;
+  };
+}
+
+/**
+ * Emitted when an agent takes storm damage from standing on a dangerous tile.
+ * Storm damage increases as phases progress and escalates within each phase.
+ */
+export interface StormDamageEvent {
+  type: 'storm_damage';
+  data: {
+    agentId: string;
+    agentName: string;
+    /** Damage dealt by the storm this epoch. */
+    damage: number;
+    /** The tile coordinate where the agent was standing. */
+    tile: { q: number; r: number };
+    /** The battle phase during which the damage was dealt. */
+    phase: BattlePhase;
+    /** Agent's HP after storm damage. */
+    hpAfter: number;
   };
 }
 
@@ -395,7 +441,9 @@ export type BattleEvent =
   | ItemPickedUpEvent
   | TrapTriggeredEvent
   | LobbyUpdateEvent
-  | BattleStartingEvent;
+  | BattleStartingEvent
+  | PhaseChangeEvent
+  | StormDamageEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 
@@ -557,6 +605,27 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     },
   });
 
+  // ── 1.1. Phase change (if a phase transition occurred this epoch) ──
+  if (result.phaseChanged) {
+    const PHASE_STORM_RING: Record<string, number> = {
+      LOOT: -1, HUNT: 3, BLOOD: 2, FINAL_STAND: 1,
+    };
+    const PHASE_COMBAT: Record<string, boolean> = {
+      LOOT: false, HUNT: true, BLOOD: true, FINAL_STAND: true,
+    };
+    events.push({
+      type: 'phase_change',
+      data: {
+        phase: result.phaseChanged.to,
+        previousPhase: result.phaseChanged.from,
+        stormRing: PHASE_STORM_RING[result.phaseChanged.to] ?? -1,
+        epochsRemaining: result.epochsRemainingInPhase ?? 0,
+        combatEnabled: PHASE_COMBAT[result.phaseChanged.to] ?? true,
+        epochNumber: result.epochNumber,
+      },
+    });
+  }
+
   // ── 1.5. Sponsor boosts (parachute drops from the crowd) ───────────
   if (result.sponsorBoosts) {
     for (const boost of result.sponsorBoosts) {
@@ -717,6 +786,23 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     }
   }
 
+  // ── 4.7. Storm damage events ────────────────────────────────────
+  if (result.stormDamageResults) {
+    for (const sd of result.stormDamageResults) {
+      events.push({
+        type: 'storm_damage',
+        data: {
+          agentId: sd.agentId,
+          agentName: sd.agentName,
+          damage: sd.damage,
+          tile: { q: sd.tile.q, r: sd.tile.r },
+          phase: sd.phase,
+          hpAfter: sd.hpAfter,
+        },
+      });
+    }
+  }
+
   // ── 5. Agent deaths ───────────────────────────────────────────────
   for (const death of result.deaths) {
     events.push({
@@ -760,8 +846,14 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
  *
  * The grid's tiles Map is flattened to a serializable array with occupant and
  * item info for each tile.
+ *
+ * @param grid - Current hex grid state
+ * @param stormTiles - Optional array of storm tile coordinates (from getStormTileCoords)
  */
-export function gridStateToEvent(grid: HexGridState): GridStateEvent {
+export function gridStateToEvent(
+  grid: HexGridState,
+  stormTiles?: { q: number; r: number }[],
+): GridStateEvent {
   const tiles: GridStateEvent['data']['tiles'] = [];
   const agentPositions: Record<string, { q: number; r: number }> = {};
 
@@ -780,8 +872,10 @@ export function gridStateToEvent(grid: HexGridState): GridStateEvent {
     }
   }
 
-  return {
-    type: 'grid_state',
-    data: { tiles, agentPositions },
-  };
+  const data: GridStateEvent['data'] = { tiles, agentPositions };
+  if (stormTiles && stormTiles.length > 0) {
+    data.stormTiles = stormTiles;
+  }
+
+  return { type: 'grid_state', data };
 }

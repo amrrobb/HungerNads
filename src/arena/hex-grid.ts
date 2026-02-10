@@ -21,6 +21,7 @@ import type {
   Direction,
   HexGridState,
 } from './types/hex';
+import type { BattlePhase } from './types/status';
 
 // Re-export types for convenience
 export type {
@@ -35,6 +36,7 @@ export type {
   ItemDrop,
   ItemType,
 } from './types/hex';
+export type { BattlePhase } from './types/status';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -263,6 +265,21 @@ export function getTilesByType(type: TileType, grid: HexGridState): HexTile[] {
   return results;
 }
 
+/**
+ * Get all outer ring tiles (Lv1, ring 3, distance 3 from center).
+ * These are the 18 EDGE tiles where agents should spawn.
+ * Returns only empty (unoccupied) outer ring tiles.
+ */
+export function getOuterRingTiles(grid: HexGridState): HexTile[] {
+  const results: HexTile[] = [];
+  for (const tile of grid.tiles.values()) {
+    if (tile.level === 1 && tile.occupantId === null) {
+      results.push(tile);
+    }
+  }
+  return results;
+}
+
 // ---------------------------------------------------------------------------
 // Pathfinding (BFS)
 // ---------------------------------------------------------------------------
@@ -433,6 +450,154 @@ export function moveAgent(
   newTiles.set(fromKey, { ...fromTile, occupantId: null });
   newTiles.set(toKey, { ...toTile, occupantId: agentId });
   return { ...grid, tiles: newTiles };
+}
+
+// ---------------------------------------------------------------------------
+// Storm Mechanic (Battle Royale shrinking ring)
+// ---------------------------------------------------------------------------
+
+/**
+ * Storm ring threshold per battle phase.
+ *
+ * A tile is in the storm if its distance from center >= the stormRing value.
+ *   -1 = no storm (all 37 tiles safe)
+ *    3 = ring 3 is storm (18 Lv1 tiles) -> 19 safe
+ *    2 = ring 2+3 is storm (18+12 = 30 tiles) -> 7 safe (Lv3+Lv4 center cluster)
+ *    1 = ring 1+2+3 is storm (18+12+6 = 36 tiles) -> 1 safe (center only)
+ */
+const STORM_RING_BY_PHASE: Record<BattlePhase, number> = {
+  LOOT: -1,
+  HUNT: 3,
+  BLOOD: 2,
+  FINAL_STAND: 1,
+};
+
+/**
+ * Get all tiles that are in the storm zone for a given battle phase.
+ *
+ * Storm tiles deal damage to agents standing on them each epoch.
+ * The storm shrinks inward as phases progress:
+ *   LOOT:        no storm (empty array)
+ *   HUNT:        ring 3 (Lv1) = 18 tiles
+ *   BLOOD:       ring 2+3 (Lv1+Lv2) = 30 tiles
+ *   FINAL_STAND: ring 1+2+3 (Lv1+Lv2+Lv3) = 36 tiles
+ */
+export function getStormTiles(phase: BattlePhase, grid: HexGridState): HexTile[] {
+  const stormRing = STORM_RING_BY_PHASE[phase];
+  if (stormRing < 0) return []; // No storm during LOOT
+
+  const results: HexTile[] = [];
+  const center: HexCoord = { q: 0, r: 0 };
+
+  for (const tile of grid.tiles.values()) {
+    const dist = getDistance(tile.coord, center);
+    if (dist >= stormRing) {
+      results.push(tile);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Check if a specific tile coordinate is inside the storm for a given phase.
+ *
+ * Returns true if the tile is dangerous (agents take storm damage).
+ */
+export function isStormTile(coord: HexCoord, phase: BattlePhase): boolean {
+  const stormRing = STORM_RING_BY_PHASE[phase];
+  if (stormRing < 0) return false; // No storm
+
+  const dist = getDistance(coord, { q: 0, r: 0 });
+  return dist >= stormRing;
+}
+
+/**
+ * Get all tiles that are safe (NOT in the storm) for a given phase.
+ *
+ *   LOOT:        37 safe tiles (all)
+ *   HUNT:        19 safe tiles (Lv2+Lv3+Lv4)
+ *   BLOOD:        7 safe tiles (Lv3+Lv4, center cluster)
+ *   FINAL_STAND:  1 safe tile  (Lv4, center only)
+ */
+export function getSafeTiles(phase: BattlePhase, grid: HexGridState): HexTile[] {
+  const stormRing = STORM_RING_BY_PHASE[phase];
+  if (stormRing < 0) {
+    // No storm — all tiles are safe
+    return Array.from(grid.tiles.values());
+  }
+
+  const results: HexTile[] = [];
+  const center: HexCoord = { q: 0, r: 0 };
+
+  for (const tile of grid.tiles.values()) {
+    const dist = getDistance(tile.coord, center);
+    if (dist < stormRing) {
+      results.push(tile);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Get the storm tile coordinates as a flat array of {q, r} objects.
+ * Useful for serialization into WebSocket events.
+ */
+export function getStormTileCoords(phase: BattlePhase, grid: HexGridState): HexCoord[] {
+  return getStormTiles(phase, grid).map(tile => tile.coord);
+}
+
+// ---------------------------------------------------------------------------
+// Movement Utility: Closest Neighbor
+// ---------------------------------------------------------------------------
+
+/**
+ * From a set of candidate hex coordinates, return the one closest to the
+ * given target. Ties are broken arbitrarily (first found).
+ *
+ * Returns null if candidates is empty.
+ */
+export function closestTo(candidates: HexCoord[], target: HexCoord): HexCoord | null {
+  if (candidates.length === 0) return null;
+
+  let best = candidates[0];
+  let bestDist = getDistance(best, target);
+
+  for (let i = 1; i < candidates.length; i++) {
+    const d = getDistance(candidates[i], target);
+    if (d < bestDist) {
+      bestDist = d;
+      best = candidates[i];
+    }
+  }
+
+  return best;
+}
+
+/**
+ * Find the nearest tile with an item from a given position.
+ * Scans all tiles in the grid and returns the coordinate of the closest
+ * tile that has at least one item. Returns null if no items exist.
+ */
+export function findNearestItemTile(
+  from: HexCoord,
+  grid: HexGridState,
+): HexCoord | null {
+  let best: HexCoord | null = null;
+  let bestDist = Infinity;
+
+  for (const tile of grid.tiles.values()) {
+    if (tile.items.length > 0) {
+      const d = getDistance(from, tile.coord);
+      if (d < bestDist) {
+        bestDist = d;
+        best = tile.coord;
+      }
+    }
+  }
+
+  return best;
 }
 
 // ---------------------------------------------------------------------------

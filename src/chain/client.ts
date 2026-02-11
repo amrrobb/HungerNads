@@ -181,13 +181,14 @@ export class HungernadsChainClient {
 
   /**
    * Register a new battle on-chain with the given agents.
-   * Calls HungernadsArena.registerBattle(bytes32, uint256[]).
+   * Calls HungernadsArena.registerBattle(bytes32, uint256[], uint256).
    *
    * @param battleId - Human-readable battle ID (hashed to bytes32)
    * @param agentIds - Numeric agent IDs participating in the battle
+   * @param entryFeeWei - Entry fee in wei (0n for free battles)
    * @returns Transaction hash
    */
-  async registerBattle(battleId: string, agentIds: number[]): Promise<Hash> {
+  async registerBattle(battleId: string, agentIds: number[], entryFeeWei: bigint = 0n): Promise<Hash> {
     const battleBytes = battleIdToBytes32(battleId);
     const agentBigInts = agentIds.map(id => BigInt(id));
 
@@ -196,7 +197,7 @@ export class HungernadsChainClient {
         address: this.arenaAddress,
         abi: hungernadsArenaAbi,
         functionName: 'registerBattle',
-        args: [battleBytes, agentBigInts],
+        args: [battleBytes, agentBigInts, entryFeeWei],
       });
 
       console.log(`[chain] registerBattle tx: ${hash}`);
@@ -366,6 +367,20 @@ export class HungernadsChainClient {
       abi: hungernadsArenaAbi,
       functionName: 'getBattleCount',
     })) as bigint;
+  }
+
+  /**
+   * Check whether a player has paid the entry fee for a battle on-chain.
+   * Calls HungernadsArena.feePaid(bytes32, address).
+   */
+  async checkFeePaid(battleId: string, walletAddress: Address): Promise<boolean> {
+    const battleBytes = battleIdToBytes32(battleId);
+    return (await this.publicClient.readContract({
+      address: this.arenaAddress,
+      abi: hungernadsArenaAbi,
+      functionName: 'feePaid',
+      args: [battleBytes, walletAddress],
+    })) as boolean;
   }
 
   // ─── Betting Read Functions ─────────────────────────────────────

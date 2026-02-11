@@ -434,7 +434,7 @@ app.post('/battle/start', async (c) => {
       const numericAgentIds = agentIds.map((_: string, i: number) => i + 1);
       const chainWork = (async () => {
         try {
-          await chainClient.registerBattle(battleId, numericAgentIds);
+          await chainClient.registerBattle(battleId, numericAgentIds, 0n);
           console.log(`[chain] Battle ${battleId} registered on-chain`);
         } catch (err) {
           console.error(`[chain] registerBattle failed for ${battleId}:`, err);

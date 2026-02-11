@@ -11,12 +11,6 @@
 // ─── HungernadsArena ABI ──────────────────────────────────────────────
 
 export const hungernadsArenaAbi = [
-  // --- Constructor ---
-  {
-    type: 'constructor',
-    inputs: [{ name: '_oracle', type: 'address' }],
-  },
-
   // --- Events ---
   {
     type: 'event',
@@ -62,6 +56,24 @@ export const hungernadsArenaAbi = [
       { name: 'winnerId', type: 'uint256', indexed: true },
     ],
   },
+  {
+    type: 'event',
+    name: 'EntryFeePaid',
+    inputs: [
+      { name: 'battleId', type: 'bytes32', indexed: true },
+      { name: 'player', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+    ],
+  },
+  {
+    type: 'event',
+    name: 'FeesWithdrawn',
+    inputs: [
+      { name: 'battleId', type: 'bytes32', indexed: true },
+      { name: 'to', type: 'address', indexed: true },
+      { name: 'amount', type: 'uint256', indexed: false },
+    ],
+  },
 
   // --- Errors ---
   { type: 'error', name: 'OnlyOracle', inputs: [] },
@@ -91,6 +103,11 @@ export const hungernadsArenaAbi = [
     inputs: [{ name: 'battleId', type: 'bytes32' }],
   },
   { type: 'error', name: 'ZeroAddress', inputs: [] },
+  { type: 'error', name: 'IncorrectFeeAmount', inputs: [] },
+  { type: 'error', name: 'AlreadyPaid', inputs: [] },
+  { type: 'error', name: 'NoFeesToWithdraw', inputs: [] },
+  { type: 'error', name: 'BattleNotCompleted', inputs: [] },
+  { type: 'error', name: 'NoFeeRequired', inputs: [] },
 
   // --- Oracle-only Write Functions ---
   {
@@ -100,6 +117,7 @@ export const hungernadsArenaAbi = [
     inputs: [
       { name: '_battleId', type: 'bytes32' },
       { name: '_agentIds', type: 'uint256[]' },
+      { name: '_entryFee', type: 'uint256' },
     ],
     outputs: [],
   },
@@ -165,6 +183,7 @@ export const hungernadsArenaAbi = [
           { name: 'winnerId', type: 'uint256' },
           { name: 'createdAt', type: 'uint256' },
           { name: 'completedAt', type: 'uint256' },
+          { name: 'entryFee', type: 'uint256' },
         ],
       },
     ],
@@ -235,20 +254,43 @@ export const hungernadsArenaAbi = [
     ],
     outputs: [{ name: '', type: 'bytes32[]' }],
   },
+  // --- Entry Fee Functions ---
+  {
+    type: 'function',
+    name: 'payEntryFee',
+    stateMutability: 'payable',
+    inputs: [{ name: '_battleId', type: 'bytes32' }],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'withdrawFees',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: '_battleId', type: 'bytes32' }],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'feePaid',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'battleId', type: 'bytes32' },
+      { name: 'player', type: 'address' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+  {
+    type: 'function',
+    name: 'feesCollected',
+    stateMutability: 'view',
+    inputs: [{ name: 'battleId', type: 'bytes32' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
 ] as const;
 
 // ─── HungernadsBetting ABI ───────────────────────────────────────────
 
 export const hungernadsBettingAbi = [
-  // --- Constructor ---
-  {
-    type: 'constructor',
-    inputs: [
-      { name: '_oracle', type: 'address' },
-      { name: '_treasury', type: 'address' },
-    ],
-  },
-
   // --- Events ---
   {
     type: 'event',

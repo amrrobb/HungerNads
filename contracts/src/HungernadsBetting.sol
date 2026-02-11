@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title HungernadsBetting
 /// @notice On-chain betting and sponsorship contract for HUNGERNADS AI gladiator battles.
-/// @dev Withdraw pattern: winners claim prizes after settlement.
+/// @dev UUPS upgradeable proxy pattern. Withdraw pattern: winners claim prizes after settlement.
 ///      Split: 85/5/5/3/2 (winners/treasury/burn/jackpot/topBettor).
 ///      Sponsorships are BURNED (sent to dead address), not added to the betting pool.
-contract HungernadsBetting is ReentrancyGuard {
+contract HungernadsBetting is Initializable, OwnableUpgradeable, ReentrancyGuard, UUPSUpgradeable {
     // ──────────────────────────────────────────────
     //  Constants
     // ──────────────────────────────────────────────
@@ -64,6 +67,9 @@ contract HungernadsBetting is ReentrancyGuard {
     /// @dev battleId => list of unique bettors who bet on winning agent (used during settlement)
     mapping(bytes32 => mapping(uint256 => address[])) internal _agentBettors;
 
+    /// @dev Storage gap for future upgrades.
+    uint256[50] private __gap;
+
     // ──────────────────────────────────────────────
     //  Events
     // ──────────────────────────────────────────────
@@ -91,6 +97,7 @@ contract HungernadsBetting is ReentrancyGuard {
     error AlreadyClaimed();
     error TransferFailed();
     error InvalidWinner();
+    error ZeroAddress();
 
     // ──────────────────────────────────────────────
     //  Modifiers
@@ -115,13 +122,47 @@ contract HungernadsBetting is ReentrancyGuard {
     }
 
     // ──────────────────────────────────────────────
-    //  Constructor
+    //  Constructor & Initializer
     // ──────────────────────────────────────────────
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the proxy. Called once during proxy deployment.
     /// @param _oracle Address authorized to create/settle battles
     /// @param _treasury Address that receives the 5% treasury cut
-    constructor(address _oracle, address _treasury) {
+    function initialize(address _oracle, address _treasury) public initializer {
+        if (_oracle == address(0)) revert ZeroAddress();
+        if (_treasury == address(0)) revert ZeroAddress();
+
+        __Ownable_init(msg.sender);
+
         oracle = _oracle;
+        treasury = _treasury;
+    }
+
+    // ──────────────────────────────────────────────
+    //  UUPS
+    // ──────────────────────────────────────────────
+
+    /// @dev Only owner can authorize upgrades.
+    function _authorizeUpgrade(address) internal override onlyOwner {}
+
+    // ──────────────────────────────────────────────
+    //  Admin Functions
+    // ──────────────────────────────────────────────
+
+    /// @notice Update the oracle address. Only callable by owner.
+    function setOracle(address _oracle) external onlyOwner {
+        if (_oracle == address(0)) revert ZeroAddress();
+        oracle = _oracle;
+    }
+
+    /// @notice Update the treasury address. Only callable by owner.
+    function setTreasury(address _treasury) external onlyOwner {
+        if (_treasury == address(0)) revert ZeroAddress();
         treasury = _treasury;
     }
 

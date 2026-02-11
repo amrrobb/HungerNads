@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title HungernadsArena
-/// @notice On-chain battle registry and result recorder for the HUNGERNADS colosseum.
+/// @notice On-chain battle registry, result recorder, and entry fee escrow for the HUNGERNADS colosseum.
 ///         An authorized oracle (the off-chain worker) registers battles and records
-///         outcomes. All battle history and agent stats are publicly queryable.
-/// @dev    Targeting Monad testnet (EVM-compatible, standard Solidity).
-contract HungernadsArena is Ownable {
+///         outcomes. Players pay entry fees on-chain. All battle history and agent stats are publicly queryable.
+/// @dev    UUPS upgradeable proxy pattern. Storage layout is append-only after initial deployment.
+contract HungernadsArena is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // -----------------------------------------------------------------------
     // Types
     // -----------------------------------------------------------------------
@@ -36,6 +38,7 @@ contract HungernadsArena is Ownable {
         uint256 winnerId;
         uint256 createdAt;
         uint256 completedAt;
+        uint256 entryFee;
     }
 
     /// @notice Cumulative on-chain stats for a registered agent.
@@ -67,6 +70,17 @@ contract HungernadsArena is Ownable {
     /// @notice Ordered list of all battle IDs for enumeration.
     bytes32[] public battleIds;
 
+    // --- NEW (appended after existing storage) ---
+
+    /// @notice battleId => player => whether they paid the entry fee.
+    mapping(bytes32 => mapping(address => bool)) public feePaid;
+
+    /// @notice battleId => total fees collected for that battle.
+    mapping(bytes32 => uint256) public feesCollected;
+
+    /// @dev Storage gap for future upgrades.
+    uint256[50] private __gap;
+
     // -----------------------------------------------------------------------
     // Events
     // -----------------------------------------------------------------------
@@ -77,6 +91,8 @@ contract HungernadsArena is Ownable {
     event BattleActivated(bytes32 indexed battleId);
     event AgentEliminated(bytes32 indexed battleId, uint256 indexed agentId, uint256 finalHp, uint256 kills);
     event BattleCompleted(bytes32 indexed battleId, uint256 indexed winnerId);
+    event EntryFeePaid(bytes32 indexed battleId, address indexed player, uint256 amount);
+    event FeesWithdrawn(bytes32 indexed battleId, address indexed to, uint256 amount);
 
     // -----------------------------------------------------------------------
     // Errors
@@ -89,6 +105,11 @@ contract HungernadsArena is Ownable {
     error InvalidAgentCount();
     error ResultAgentMismatch(bytes32 battleId);
     error ZeroAddress();
+    error IncorrectFeeAmount();
+    error AlreadyPaid();
+    error NoFeesToWithdraw();
+    error BattleNotCompleted();
+    error NoFeeRequired();
 
     // -----------------------------------------------------------------------
     // Modifiers
@@ -100,15 +121,30 @@ contract HungernadsArena is Ownable {
     }
 
     // -----------------------------------------------------------------------
-    // Constructor
+    // Constructor & Initializer
     // -----------------------------------------------------------------------
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initialize the proxy. Called once during proxy deployment.
     /// @param _oracle Initial oracle address that can register battles and record results.
-    constructor(address _oracle) Ownable(msg.sender) {
+    function initialize(address _oracle) public initializer {
         if (_oracle == address(0)) revert ZeroAddress();
+
+        __Ownable_init(msg.sender);
         oracle = _oracle;
         emit OracleUpdated(address(0), _oracle);
     }
+
+    // -----------------------------------------------------------------------
+    // UUPS
+    // -----------------------------------------------------------------------
+
+    /// @dev Only owner can authorize upgrades.
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 
     // -----------------------------------------------------------------------
     // Admin
@@ -130,7 +166,8 @@ contract HungernadsArena is Ownable {
     ///         in `Created` state. Agents that haven't been seen before are auto-registered.
     /// @param _battleId Unique identifier for the battle.
     /// @param _agentIds Array of agent IDs participating (must be >= 2).
-    function registerBattle(bytes32 _battleId, uint256[] calldata _agentIds) external onlyOracle {
+    /// @param _entryFee Entry fee in wei that players must pay to join. 0 for free battles.
+    function registerBattle(bytes32 _battleId, uint256[] calldata _agentIds, uint256 _entryFee) external onlyOracle {
         if (battles[_battleId].state != BattleState.None) {
             revert BattleAlreadyExists(_battleId);
         }
@@ -142,7 +179,8 @@ contract HungernadsArena is Ownable {
             agentIds: _agentIds,
             winnerId: 0,
             createdAt: block.timestamp,
-            completedAt: 0
+            completedAt: 0,
+            entryFee: _entryFee
         });
         battleIds.push(_battleId);
 
@@ -210,6 +248,42 @@ contract HungernadsArena is Ownable {
         }
 
         emit BattleCompleted(_battleId, _winnerId);
+    }
+
+    // -----------------------------------------------------------------------
+    // Entry Fee System
+    // -----------------------------------------------------------------------
+
+    /// @notice Pay the entry fee for a battle. Must send exact fee amount.
+    /// @param _battleId The battle to pay the entry fee for.
+    function payEntryFee(bytes32 _battleId) external payable {
+        Battle storage b = battles[_battleId];
+        if (b.state == BattleState.None) revert BattleNotFound(_battleId);
+        if (b.entryFee == 0) revert NoFeeRequired();
+        if (msg.value != b.entryFee) revert IncorrectFeeAmount();
+        if (feePaid[_battleId][msg.sender]) revert AlreadyPaid();
+
+        feePaid[_battleId][msg.sender] = true;
+        feesCollected[_battleId] += msg.value;
+
+        emit EntryFeePaid(_battleId, msg.sender, msg.value);
+    }
+
+    /// @notice Withdraw collected entry fees for a completed battle. Only callable by owner.
+    /// @param _battleId The battle to withdraw fees from.
+    function withdrawFees(bytes32 _battleId) external onlyOwner {
+        Battle storage b = battles[_battleId];
+        if (b.state != BattleState.Completed) revert BattleNotCompleted();
+
+        uint256 amount = feesCollected[_battleId];
+        if (amount == 0) revert NoFeesToWithdraw();
+
+        feesCollected[_battleId] = 0;
+
+        (bool success,) = owner().call{value: amount}("");
+        if (!success) revert ZeroAddress(); // reuse error for transfer fail
+
+        emit FeesWithdrawn(_battleId, owner(), amount);
     }
 
     // -----------------------------------------------------------------------

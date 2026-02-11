@@ -407,6 +407,64 @@ export class HungernadsChainClient {
     // battles() returns [exists, resolving, settled, winnerId, totalPool, winnersPool]
     return result[2]; // settled
   }
+
+  // ─── Fee Verification ──────────────────────────────────────────
+
+  /**
+   * Verify that a fee payment transaction was successful on-chain.
+   * Fetches the transaction receipt and the transaction itself to confirm:
+   *   1. The transaction has been mined and succeeded (status === 'success')
+   *   2. The transaction value >= expectedFeeWei
+   *   3. The sender matches expectedSender (if provided)
+   *
+   * Returns false (rather than throwing) when the receipt is not yet
+   * available, allowing the caller to retry with a polling pattern.
+   *
+   * @param txHash          - The transaction hash to verify
+   * @param expectedFeeWei  - Minimum expected value in wei
+   * @param expectedSender  - Optional: wallet address that should have sent the tx
+   */
+  async checkFeePaid(
+    txHash: Hash,
+    expectedFeeWei: bigint,
+    expectedSender?: Address,
+  ): Promise<boolean> {
+    try {
+      const [receipt, tx] = await Promise.all([
+        this.publicClient.getTransactionReceipt({ hash: txHash }),
+        this.publicClient.getTransaction({ hash: txHash }),
+      ]);
+
+      // Transaction must have succeeded
+      if (receipt.status !== 'success') {
+        console.warn(`[chain] checkFeePaid: tx ${txHash} status=${receipt.status}`);
+        return false;
+      }
+
+      // Transaction value must cover the fee
+      if (tx.value < expectedFeeWei) {
+        console.warn(
+          `[chain] checkFeePaid: tx ${txHash} value ${tx.value} < expected ${expectedFeeWei}`,
+        );
+        return false;
+      }
+
+      // If a sender is specified, it must match
+      if (expectedSender && tx.from.toLowerCase() !== expectedSender.toLowerCase()) {
+        console.warn(
+          `[chain] checkFeePaid: tx ${txHash} from ${tx.from} !== expected ${expectedSender}`,
+        );
+        return false;
+      }
+
+      return true;
+    } catch (error: unknown) {
+      // Receipt not found = tx not yet mined; caller should retry
+      const msg = error instanceof Error ? error.message : String(error);
+      console.warn(`[chain] checkFeePaid: ${txHash} not yet confirmed: ${msg}`);
+      return false;
+    }
+  }
 }
 
 // ─── Factory ────────────────────────────────────────────────────────

@@ -1441,6 +1441,36 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
       // Non-fatal: epoch processing will still work from DO storage
     }
 
+    // ── On-chain registration (non-blocking) ──────────────────────
+    // Register the battle + create betting pool on the smart contracts.
+    // Mirrors logic from legacy /battle/start in routes.ts.
+    // Gracefully skipped if env vars are missing (dev mode).
+    const chainClient = createChainClient(this.env);
+    if (chainClient) {
+      const numericAgentIds = agentIds.map((_: string, i: number) => i + 1);
+      const chainWork = (async () => {
+        try {
+          await chainClient.registerBattle(battleState.battleId, numericAgentIds);
+          console.log(`[chain] Battle ${battleState.battleId} registered on-chain`);
+        } catch (err) {
+          console.error(`[chain] registerBattle failed for ${battleState.battleId}:`, err);
+        }
+        try {
+          await chainClient.createBettingPool(battleState.battleId);
+          console.log(`[chain] Betting pool created on-chain for ${battleState.battleId}`);
+        } catch (err) {
+          console.error(`[chain] createBettingPool failed for ${battleState.battleId}:`, err);
+        }
+        try {
+          await chainClient.activateBattle(battleState.battleId);
+          console.log(`[chain] Battle ${battleState.battleId} activated on-chain`);
+        } catch (err) {
+          console.error(`[chain] activateBattle failed for ${battleState.battleId}:`, err);
+        }
+      })();
+      this.state.waitUntil(chainWork);
+    }
+
     // Start streaming $HNADS curve events to spectators
     this.startCurveStream();
 

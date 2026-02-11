@@ -23,3 +23,10 @@ export {
   createNadFunClient,
   type NadFunConfig,
 } from './nadfun';
+
+export {
+  MockTokenClient,
+  createTokenClient,
+  type TokenClient,
+  type MockTokenConfig,
+} from './token-client';

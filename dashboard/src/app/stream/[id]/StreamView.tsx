@@ -19,6 +19,7 @@ import type {
   BattleEndEvent,
   PhaseChangeEvent,
   StormDamageEvent,
+  AgentTokenTradeEvent,
 } from "@/lib/websocket";
 import type { AgentClass } from "@/types";
 import StreamHighlightBanner from "@/components/stream/HighlightBanner";
@@ -300,6 +301,29 @@ function eventToFeedEntries(
           agentName,
           agentClass,
           message: `${agentName} takes ${Math.round(e.data.damage)} storm damage on (${e.data.tile.q},${e.data.tile.r})! (${Math.round(e.data.hpAfter)} HP remaining)`,
+        },
+      ];
+    }
+
+    case "agent_token_trade": {
+      const e = event as AgentTokenTradeEvent;
+      const meta = agentMeta.get(e.data.agentId);
+      const agentName = meta?.name ?? e.data.agentName;
+      const agentClass = meta?.class;
+      const verb = e.data.action === 'buy' ? 'bought' : 'panic-sold';
+      const txSuffix = e.data.txHash
+        ? ` (tx: ${e.data.txHash.slice(0, 10)}...)`
+        : ' (tx pending)';
+      return [
+        {
+          id: `ws-${index}`,
+          timestamp: ts,
+          epoch: e.data.epochNumber,
+          type: "TOKEN_TRADE",
+          agentId: e.data.agentId,
+          agentName,
+          agentClass,
+          message: `${agentName} ${verb} $HNADS for ${e.data.amount} MON. ${e.data.reason}${txSuffix}`,
         },
       ];
     }

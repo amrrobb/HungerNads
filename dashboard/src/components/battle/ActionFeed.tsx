@@ -20,6 +20,7 @@ const EVENT_STYLE: Record<
   MARKET: { icon: "\uD83D\uDCC8", color: "text-gray-500" },
   STORM: { icon: "\u26A1", color: "text-purple-400" },
   PHASE_CHANGE: { icon: "\uD83C\uDFFA", color: "text-amber-400" },
+  TOKEN_TRADE: { icon: "\uD83D\uDCB0", color: "text-green-300" },
 };
 
 function formatTime(ts: number): string {
@@ -58,8 +59,7 @@ export default function ActionFeed({ entries }: ActionFeedProps) {
 
       <div
         ref={scrollRef}
-        className="flex-1 space-y-1 overflow-y-auto pr-1 scrollbar-thin"
-        style={{ maxHeight: "400px" }}
+        className="flex-1 min-h-0 space-y-1 overflow-y-auto pr-1 scrollbar-thin"
       >
         {entries.map((entry) => {
           const style = EVENT_STYLE[entry.type];
@@ -81,7 +81,9 @@ export default function ActionFeed({ entries }: ActionFeedProps) {
                         ? "bg-purple-500/5 border-l-2 border-purple-500/40"
                         : entry.type === "PHASE_CHANGE"
                           ? "bg-amber-500/10 border-l-2 border-amber-500/40"
-                          : ""
+                          : entry.type === "TOKEN_TRADE"
+                            ? "bg-green-500/5 border-l-2 border-green-500/30"
+                            : ""
               }`}
             >
               {/* Timestamp -- suppressHydrationWarning because locale-formatted

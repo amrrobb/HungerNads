@@ -3,6 +3,7 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { useAccount } from "wagmi";
 import {
+  AgentCard,
   HexBattleArena,
   ActionFeed,
   EpochTimer,
@@ -42,6 +43,7 @@ import type {
   TrapTriggeredEvent,
   PhaseChangeEvent,
   StormDamageEvent,
+  AgentTokenTradeEvent,
 } from "@/lib/websocket";
 import type { AgentClass } from "@/types";
 
@@ -397,6 +399,29 @@ function eventToFeedEntries(
           agentName,
           agentClass,
           message: `${agentName} takes ${Math.round(e.data.damage)} storm damage on (${e.data.tile.q},${e.data.tile.r})! (${Math.round(e.data.hpAfter)} HP remaining)`,
+        },
+      ];
+    }
+
+    case "agent_token_trade": {
+      const e = event as AgentTokenTradeEvent;
+      const meta = agentMeta.get(e.data.agentId);
+      const agentName = meta?.name ?? e.data.agentName;
+      const agentClass = meta?.class;
+      const verb = e.data.action === 'buy' ? 'bought' : 'panic-sold';
+      const txSuffix = e.data.txHash
+        ? ` (tx: ${e.data.txHash.slice(0, 10)}...)`
+        : ' (tx pending)';
+      return [
+        {
+          id: `ws-${index}`,
+          timestamp: ts,
+          epoch: e.data.epochNumber,
+          type: "TOKEN_TRADE",
+          agentId: e.data.agentId,
+          agentName,
+          agentClass,
+          message: `${agentName} ${verb} $HNADS for ${e.data.amount} MON. ${e.data.reason}${txSuffix}`,
         },
       ];
     }
@@ -863,7 +888,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
   ];
 
   return (
-    <div className="space-y-4 sm:space-y-6">
+    <div className="space-y-4 overflow-x-hidden sm:space-y-6">
       {/* Toast notifications */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
 
@@ -958,8 +983,8 @@ export default function BattleView({ battleId }: BattleViewProps) {
       />
 
       {/* Cinematic top bar: epoch timer + pool + sponsor button */}
-      <div className="grid grid-cols-1 gap-3 sm:gap-4 lg:grid-cols-3">
-        <div className="card lg:col-span-2">
+      <div className="grid grid-cols-1 gap-3 sm:gap-4 md:grid-cols-3">
+        <div className="card md:col-span-2">
           <EpochTimer
             currentEpoch={currentEpoch}
             isComplete={!!winner}
@@ -1034,9 +1059,9 @@ export default function BattleView({ battleId }: BattleViewProps) {
       )}
 
       {/* Main layout: arena + sidebar */}
-      <div className="grid grid-cols-1 gap-4 sm:gap-6 lg:grid-cols-3">
-        {/* Arena */}
-        <div className="card lg:col-span-2">
+      <div className="grid grid-cols-1 gap-4 sm:gap-6 md:grid-cols-3">
+        {/* Arena (full width on mobile, 2/3 on md+) */}
+        <div className="card md:col-span-2">
           <HexBattleArena
             agents={agents}
             currentEpoch={currentEpoch}
@@ -1049,10 +1074,24 @@ export default function BattleView({ battleId }: BattleViewProps) {
           />
         </div>
 
+        {/* Mobile-only agent cards — visible below hex grid on small screens */}
+        {agents.length > 0 && (
+          <div className="md:hidden">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-widest text-gray-600">
+              Gladiators
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {agents.map((agent) => (
+                <AgentCard key={agent.id} agent={agent} />
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Sidebar: desktop shows all panels stacked, mobile uses tabs */}
         <div className="flex flex-col gap-4">
           {/* Mobile tab bar for sidebar panels */}
-          <div className="flex overflow-x-auto border-b border-colosseum-surface-light lg:hidden">
+          <div className="flex overflow-x-auto border-b border-colosseum-surface-light md:hidden">
             {sidebarTabs.map((tab) => (
               <button
                 key={tab.key}
@@ -1072,12 +1111,12 @@ export default function BattleView({ battleId }: BattleViewProps) {
           </div>
 
           {/* Betting panel */}
-          <div className={`card ${mobileSidebarTab !== "bets" ? "hidden lg:block" : ""}`}>
+          <div className={`card ${mobileSidebarTab !== "bets" ? "hidden md:block" : ""}`}>
             <BettingPanel agents={agents} battleId={battleId} winner={winner} />
           </div>
 
           {/* Battle chat */}
-          <div className={`card ${mobileSidebarTab !== "chat" ? "hidden lg:block" : ""}`}>
+          <div className={`card ${mobileSidebarTab !== "chat" ? "hidden md:block" : ""}`}>
             <BattleChat
               battleId={battleId}
               isConnected={walletConnected}
@@ -1086,12 +1125,12 @@ export default function BattleView({ battleId }: BattleViewProps) {
           </div>
 
           {/* Sponsor feed */}
-          <div className={`card ${mobileSidebarTab !== "sponsors" ? "hidden lg:block" : ""}`}>
+          <div className={`card ${mobileSidebarTab !== "sponsors" ? "hidden md:block" : ""}`}>
             <SponsorFeed events={events} agentMeta={agentMeta} />
           </div>
 
           {/* Market ticker */}
-          <div className={`card ${mobileSidebarTab !== "markets" ? "hidden lg:block" : ""}`}>
+          <div className={`card ${mobileSidebarTab !== "markets" ? "hidden md:block" : ""}`}>
             <MarketTicker />
           </div>
 
@@ -1100,8 +1139,8 @@ export default function BattleView({ battleId }: BattleViewProps) {
 
       {/* Battle Log -- full-width below arena for better readability */}
       <div
-        className="card"
-        style={{ maxHeight: "380px", display: "flex", flexDirection: "column" }}
+        className="card max-h-[300px] md:max-h-[380px]"
+        style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}
       >
         <ActionFeed entries={feed} />
       </div>

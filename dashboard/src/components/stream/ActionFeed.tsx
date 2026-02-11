@@ -20,6 +20,7 @@ const EVENT_STYLE: Record<
   MARKET: { icon: "\uD83D\uDCC8", color: "text-gray-500" },
   STORM: { icon: "\u26A1", color: "text-purple-400" },
   PHASE_CHANGE: { icon: "\uD83C\uDFFA", color: "text-amber-400" },
+  TOKEN_TRADE: { icon: "\uD83D\uDCB0", color: "text-green-300" },
 };
 
 /**

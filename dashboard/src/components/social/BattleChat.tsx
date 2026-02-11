@@ -114,7 +114,7 @@ export default function BattleChat({
   };
 
   return (
-    <div className="flex max-h-[420px] flex-col">
+    <div className="flex max-h-[420px] flex-col overflow-hidden">
       {/* Header */}
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500">
@@ -129,8 +129,7 @@ export default function BattleChat({
       {/* Messages */}
       <div
         ref={scrollRef}
-        className="flex-1 space-y-1.5 overflow-y-auto pr-1 scrollbar-thin"
-        style={{ maxHeight: "300px" }}
+        className="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1 scrollbar-thin"
       >
         {messages.map((msg) => (
           <div

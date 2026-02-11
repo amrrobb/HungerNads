@@ -72,13 +72,15 @@ export interface StreamPhaseState {
   phaseTotalEpochs: number;
 }
 
-/** Recent agent movement from agent_moved events (cleared each epoch). */
+/** Recent agent movement from agent_moved events (persisted for 2 epochs with opacity fade). */
 export interface RecentMove {
   agentId: string;
   agentName: string;
   from: { q: number; r: number };
   to: { q: number; r: number };
   success: boolean;
+  /** Epoch number when this move occurred, used for trail age / opacity calculation. */
+  epoch: number;
 }
 
 /** Agent position from the grid_state event (agentId -> hex coord). */
@@ -130,6 +132,8 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
   const [stormTiles, setStormTiles] = useState<{ q: number; r: number }[]>([]);
 
   const wsRef = useRef<BattleWebSocket | null>(null);
+  /** Ref tracking latest epoch number for use inside event callback (avoids stale closure). */
+  const latestEpochRef = useRef(0);
 
   // Process incoming events and update derived state
   const handleEvent = useCallback((event: BattleEvent) => {
@@ -142,10 +146,14 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
     switch (event.type) {
       case 'epoch_start': {
         const e = event as EpochStartEvent;
-        setLatestEpoch(e.data.epochNumber);
+        const newEpoch = e.data.epochNumber;
+        latestEpochRef.current = newEpoch;
+        setLatestEpoch(newEpoch);
         setMarketData(e.data.marketData);
-        // Clear movement trails from previous epoch
-        setRecentMoves([]);
+        // Prune movement trails older than 2 epochs (keep current + 1 previous)
+        setRecentMoves((prev) =>
+          prev.filter((m) => newEpoch - m.epoch < 2)
+        );
         // Decrement epochs remaining in current phase (if tracked)
         setPhaseState((prev) => {
           if (!prev) return prev;
@@ -201,6 +209,7 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
             from: e.data.from,
             to: e.data.to,
             success: e.data.success,
+            epoch: latestEpochRef.current,
           },
         ]);
         break;

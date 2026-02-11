@@ -52,6 +52,8 @@ interface RecentMove {
   from: { q: number; r: number };
   to: { q: number; r: number };
   success: boolean;
+  /** Epoch number when this move occurred, used for trail age / opacity calculation. */
+  epoch: number;
 }
 
 /** Battle phase — mirrors backend BattlePhase type. */
@@ -316,6 +318,49 @@ const STORM_PHASE_VISUALS: Record<BattlePhase, {
 };
 
 // ---------------------------------------------------------------------------
+// Per-tile terrain styling — storm / safe / cornucopia fill+stroke overrides
+// ---------------------------------------------------------------------------
+
+/** Storm tile fill+stroke per phase (applied to the base hex polygon). */
+const STORM_TILE_STYLE: Record<BattlePhase, {
+  fill: string;
+  stroke: string;
+  strokeWidth: number;
+  animClass: string;
+}> = {
+  LOOT: { fill: "", stroke: "", strokeWidth: 0, animClass: "" },
+  HUNT: {
+    fill: "#1a0f08",
+    stroke: "rgba(245, 158, 11, 0.5)",
+    strokeWidth: 2,
+    animClass: "tile-storm-hunt",
+  },
+  BLOOD: {
+    fill: "#1a0808",
+    stroke: "rgba(220, 38, 38, 0.6)",
+    strokeWidth: 2,
+    animClass: "tile-storm-blood",
+  },
+  FINAL_STAND: {
+    fill: "#140a1f",
+    stroke: "rgba(124, 58, 237, 0.7)",
+    strokeWidth: 2.5,
+    animClass: "tile-storm-final",
+  },
+};
+
+/** Safe zone tile stroke per phase (applied when storm is active). */
+const SAFE_TILE_STYLE: Record<BattlePhase, {
+  stroke: string;
+  strokeWidth: number;
+}> = {
+  LOOT: { stroke: "", strokeWidth: 0 },
+  HUNT: { stroke: "rgba(34, 197, 94, 0.25)", strokeWidth: 1.5 },
+  BLOOD: { stroke: "rgba(34, 197, 94, 0.35)", strokeWidth: 1.5 },
+  FINAL_STAND: { stroke: "rgba(34, 197, 94, 0.5)", strokeWidth: 2 },
+};
+
+// ---------------------------------------------------------------------------
 // Item icon SVG renderer (inline icons on tiles)
 // ---------------------------------------------------------------------------
 
@@ -377,6 +422,10 @@ function HexTile({
   isAttackTarget,
   isDying = false,
   isGhost = false,
+  animOffset,
+  isStormTile = false,
+  isSafeZone = false,
+  effectivePhase = "LOOT",
 }: {
   hex: ArenaHex;
   center: PixelPoint;
@@ -388,6 +437,14 @@ function HexTile({
   isDying?: boolean;
   /** Agent has finished dying and is now a ghost (final resting state). */
   isGhost?: boolean;
+  /** Pixel offset for movement animation. Agent renders at center + offset, transitions to (0,0). */
+  animOffset?: { x: number; y: number };
+  /** Whether this tile is in the storm zone. */
+  isStormTile?: boolean;
+  /** Whether this tile is in the safe zone (and storm is active). */
+  isSafeZone?: boolean;
+  /** Current battle phase for terrain styling. */
+  effectivePhase?: BattlePhase;
 }) {
   const occupied = !!agent;
   const isDead = agent && !agent.alive;
@@ -415,11 +472,43 @@ function HexTile({
 
   // Base tile styling from tile level (4-tier)
   const tileCfg = TILE_LEVEL_COLORS[hex.tileLevel];
-  // If occupied, blend agent color with tile
-  const baseFill = occupied ? agentColors.fill : tileCfg.fill;
-  const baseStroke = occupied ? agentColors.stroke : tileCfg.stroke;
-  const baseStrokeWidth = occupied ? 2 : tileCfg.strokeWidth;
-  const baseDash = occupied ? undefined : tileCfg.dashArray;
+  // Determine if this is the cornucopia center tile (q=0, r=0)
+  const isCornucopiaCenter = hex.q === 0 && hex.r === 0;
+
+  // Compute per-tile terrain styling (storm / safe / cornucopia)
+  let baseFill: string;
+  let baseStroke: string;
+  let baseStrokeWidth: number;
+  let baseDash: string | undefined;
+  let tileAnimClass = "";
+
+  if (occupied) {
+    baseFill = agentColors.fill;
+    baseStroke = agentColors.stroke;
+    baseStrokeWidth = 2;
+    baseDash = undefined;
+  } else if (isStormTile && effectivePhase !== "LOOT") {
+    // Storm zone: dark tinted fill + colored pulsing border
+    const stormStyle = STORM_TILE_STYLE[effectivePhase];
+    baseFill = stormStyle.fill;
+    baseStroke = stormStyle.stroke;
+    baseStrokeWidth = stormStyle.strokeWidth;
+    baseDash = "6,3";
+    tileAnimClass = stormStyle.animClass;
+  } else if (isSafeZone && effectivePhase !== "LOOT") {
+    // Safe zone: keep tile-level fill, add green border
+    const safeStyle = SAFE_TILE_STYLE[effectivePhase];
+    baseFill = tileCfg.fill;
+    baseStroke = safeStyle.stroke;
+    baseStrokeWidth = safeStyle.strokeWidth;
+    baseDash = undefined;
+  } else {
+    // Default: use tile level colors
+    baseFill = tileCfg.fill;
+    baseStroke = tileCfg.stroke;
+    baseStrokeWidth = tileCfg.strokeWidth;
+    baseDash = tileCfg.dashArray;
+  }
 
   const vertices = hexVertices(center.x, center.y, HEX_SIZE - 2);
   const innerVertices = hexVertices(center.x, center.y, HEX_SIZE - 6);
@@ -440,12 +529,37 @@ function HexTile({
 
   return (
     <g
-      style={isWinner ? {
-        filter: "url(#winner-glow)",
-        transform: `translate(${center.x}px, ${center.y}px) scale(1.15) translate(${-center.x}px, ${-center.y}px)`,
-        transition: "transform 0.6s ease-out, filter 0.6s ease-out",
-      } : undefined}
+      style={{
+        ...(isWinner
+          ? {
+              filter: "url(#winner-glow)",
+              transform: `translate(${center.x}px, ${center.y}px) scale(1.15) translate(${-center.x}px, ${-center.y}px)`,
+              transition:
+                "transform 0.6s ease-out, filter 0.6s ease-out",
+            }
+          : {}),
+        ...(occupied ? { cursor: "pointer" } : {}),
+      }}
+      role={occupied ? "button" : undefined}
+      tabIndex={occupied ? 0 : undefined}
+      aria-label={
+        agent
+          ? `${agent.name} - ${agent.class} - ${agent.hp}/${agent.maxHp} HP`
+          : undefined
+      }
     >
+      {/* Invisible touch target: ensures >= 44px tap area on mobile */}
+      {occupied && (
+        <circle
+          cx={center.x}
+          cy={center.y}
+          r={Math.max(HEX_SIZE, 37)}
+          fill="transparent"
+          stroke="none"
+          style={{ pointerEvents: "all" }}
+        />
+      )}
+
       {/* Glow filter for active states */}
       {(isDefending || isWinner || isAttackSource) && (
         <polygon
@@ -495,7 +609,7 @@ function HexTile({
         </polygon>
       )}
 
-      {/* Main hex shape — tile-type colored background */}
+      {/* Main hex shape — tile-type colored background with terrain styling */}
       <polygon
         points={vertices}
         fill={baseFill}
@@ -503,10 +617,32 @@ function HexTile({
         strokeWidth={baseStrokeWidth}
         strokeDasharray={baseDash}
         opacity={isGhost ? 0.5 : 1}
+        className={tileAnimClass || undefined}
       />
 
-      {/* Legendary / Epic center glow */}
-      {hex.tileLevel >= 3 && !occupied && (
+      {/* Cornucopia center tile (q=0, r=0) — persistent gold glow */}
+      {isCornucopiaCenter && !occupied && (
+        <>
+          {/* Outer gold halo */}
+          <polygon
+            points={hexVertices(center.x, center.y, HEX_SIZE + 3)}
+            fill="none"
+            stroke="rgba(245, 158, 11, 0.25)"
+            strokeWidth="2"
+            className="tile-cornucopia-glow"
+          />
+          {/* Inner gold radial fill */}
+          <polygon
+            points={hexVertices(center.x, center.y, HEX_SIZE - 8)}
+            fill="rgba(245, 158, 11, 0.15)"
+            stroke="none"
+            className="tile-cornucopia-inner"
+          />
+        </>
+      )}
+
+      {/* Legendary / Epic center glow (non-center cornucopia tiles) */}
+      {hex.tileLevel >= 3 && !isCornucopiaCenter && !occupied && (
         <polygon
           points={hexVertices(center.x, center.y, HEX_SIZE - 10)}
           fill={hex.tileLevel === 4 ? "rgba(245,158,11,0.12)" : "rgba(245,158,11,0.06)"}
@@ -578,7 +714,7 @@ function HexTile({
         </text>
       )}
 
-      {/* Agent content with class-colored glow */}
+      {/* Agent content with class-colored glow + movement animation */}
       {agent && (() => {
         // Glow: class-colored drop-shadow, intensity inversely proportional to HP
         const agentGlowColor = isGhost ? null : agentColors.stroke;
@@ -590,6 +726,12 @@ function HexTile({
         const glowFilterIntense = agentGlowColor
           ? `drop-shadow(0 0 ${glowBlur + 4}px ${agentGlowColor}) drop-shadow(0 0 ${glowBlur + 2}px ${agentGlowColor})`
           : "none";
+
+        // Movement animation: offset from old tile, CSS transition slides to (0,0)
+        const ox = animOffset?.x ?? 0;
+        const oy = animOffset?.y ?? 0;
+        const moveTransform = `translate(${ox}px, ${oy}px)`;
+        const moveTransition = "transform 300ms ease-out";
 
         const agentContent = (
           <>
@@ -773,9 +915,12 @@ function HexTile({
           </>
         );
 
+        // Determine agent visual variant (dying/ghost/lowHP/normal)
+        let agentVisual: React.ReactNode;
+
         // Dying agent: full multi-step death choreography (~1.5s)
         if (isDying) {
-          return (
+          agentVisual = (
             <>
               {/* Phase 1: Red flash overlay (~200ms) */}
               <motion.polygon
@@ -864,11 +1009,9 @@ function HexTile({
               />
             </>
           );
-        }
-
-        // Ghost agent: final resting state — fully faded, grayscale, non-interactive
-        if (isGhost) {
-          return (
+        } else if (isGhost) {
+          // Ghost agent: final resting state — fully faded, grayscale, non-interactive
+          agentVisual = (
             <g
               opacity={0.4}
               style={{ filter: "grayscale(1)", pointerEvents: "none" }}
@@ -876,11 +1019,9 @@ function HexTile({
               {agentContent}
             </g>
           );
-        }
-
-        // Low HP (<25%): pulsing glow via motion.g
-        if (isLowHp) {
-          return (
+        } else if (isLowHp) {
+          // Low HP (<25%): pulsing glow via motion.g
+          agentVisual = (
             <motion.g
               style={{ filter: glowFilter }}
               animate={{ filter: [glowFilter, glowFilterIntense, glowFilter] }}
@@ -889,15 +1030,25 @@ function HexTile({
               {agentContent}
             </motion.g>
           );
+        } else {
+          // Normal alive agent: static class-colored glow
+          agentVisual = (
+            <g
+              opacity={1}
+              style={{ filter: glowFilter }}
+            >
+              {agentContent}
+            </g>
+          );
         }
 
-        // Normal alive agent: static class-colored glow
+        // Wrap in movement animation <g> — offsets agent from old tile, CSS transition slides to new tile
         return (
-          <g
-            opacity={1}
-            style={{ filter: glowFilter }}
-          >
-            {agentContent}
+          <g style={{
+            transform: moveTransform,
+            transition: moveTransition,
+          }}>
+            {agentVisual}
           </g>
         );
       })()}
@@ -1161,11 +1312,14 @@ function MovementTrail({
   to,
   color,
   success,
+  trailOpacity = 1,
 }: {
   from: PixelPoint;
   to: PixelPoint;
   color: string;
   success: boolean;
+  /** Opacity multiplier based on trail age: 1.0 = current epoch, 0.5 = 1 epoch old. */
+  trailOpacity?: number;
 }) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
@@ -1190,9 +1344,10 @@ function MovementTrail({
   const a2y = endY - arrowSize * Math.sin(arrowAngle + 0.4);
 
   const lineColor = success ? color : "rgba(220,38,38,0.5)";
+  const isCurrent = trailOpacity >= 1;
 
   return (
-    <g>
+    <g opacity={trailOpacity}>
       {/* Trail line */}
       <line
         x1={startX}
@@ -1200,7 +1355,7 @@ function MovementTrail({
         x2={endX}
         y2={endY}
         stroke={lineColor}
-        strokeWidth="2"
+        strokeWidth={isCurrent ? 2 : 1.5}
         strokeDasharray="4,3"
         opacity="0.5"
         strokeLinecap="round"
@@ -1212,12 +1367,15 @@ function MovementTrail({
           dur="0.8s"
           repeatCount="indefinite"
         />
-        <animate
-          attributeName="opacity"
-          values="0.6;0.3;0"
-          dur="2s"
-          fill="freeze"
-        />
+        {/* Current epoch trails fade out; older trails stay at their reduced opacity */}
+        {isCurrent && (
+          <animate
+            attributeName="opacity"
+            values="0.6;0.3;0"
+            dur="2s"
+            fill="freeze"
+          />
+        )}
       </line>
 
       {/* Arrow head */}
@@ -1227,12 +1385,14 @@ function MovementTrail({
           fill={lineColor}
           opacity="0.5"
         >
-          <animate
-            attributeName="opacity"
-            values="0.6;0.3;0"
-            dur="2s"
-            fill="freeze"
-          />
+          {isCurrent && (
+            <animate
+              attributeName="opacity"
+              values="0.6;0.3;0"
+              dur="2s"
+              fill="freeze"
+            />
+          )}
         </polygon>
       )}
 
@@ -1248,7 +1408,9 @@ function MovementTrail({
             strokeWidth="2"
             strokeLinecap="round"
           >
-            <animate attributeName="opacity" values="0.8;0;0" dur="2s" fill="freeze" />
+            {isCurrent && (
+              <animate attributeName="opacity" values="0.8;0;0" dur="2s" fill="freeze" />
+            )}
           </line>
           <line
             x1={to.x + 5}
@@ -1259,7 +1421,9 @@ function MovementTrail({
             strokeWidth="2"
             strokeLinecap="round"
           >
-            <animate attributeName="opacity" values="0.8;0;0" dur="2s" fill="freeze" />
+            {isCurrent && (
+              <animate attributeName="opacity" values="0.8;0;0" dur="2s" fill="freeze" />
+            )}
           </line>
         </g>
       )}
@@ -1486,6 +1650,17 @@ export default function HexBattleArena({
   // Track previous positions for movement animation
   const prevPositionsRef = useRef<Map<string, HexCoord>>(new Map());
 
+  // ---------------------------------------------------------------------------
+  // Movement animation offset state
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Pixel offsets for agents currently animating between tiles.
+   * Key: agentId, Value: pixel offset from new tile center.
+   * Starts as (oldPixel - newPixel), transitions to (0,0) via CSS transition.
+   */
+  const [animOffsets, setAnimOffsets] = useState<Map<string, { x: number; y: number }>>(new Map());
+
   // Build lookup: agentId -> pixel center (with motion animation support)
   const agentPixelPositions = useMemo(() => {
     const map = new Map<string, PixelPoint>();
@@ -1496,9 +1671,54 @@ export default function HexBattleArena({
         map.set(agentId, center);
       }
     }
-    // Update previous positions ref
-    prevPositionsRef.current = new Map(positions);
     return map;
+  }, [positions, hexCenters]);
+
+  // Detect position changes and trigger movement animation offsets
+  useEffect(() => {
+    const prevPositions = prevPositionsRef.current;
+    const newOffsets = new Map<string, { x: number; y: number }>();
+
+    for (const [agentId, newCoord] of positions) {
+      const oldCoord = prevPositions.get(agentId);
+      if (!oldCoord) continue; // First render, no animation
+      // Check if position actually changed
+      if (oldCoord.q === newCoord.q && oldCoord.r === newCoord.r) continue;
+
+      const oldKey = `${oldCoord.q},${oldCoord.r}`;
+      const newKey = `${newCoord.q},${newCoord.r}`;
+      const oldPixel = hexCenters.get(oldKey);
+      const newPixel = hexCenters.get(newKey);
+      if (!oldPixel || !newPixel) continue;
+
+      // Set initial offset: old position relative to new position
+      newOffsets.set(agentId, {
+        x: oldPixel.x - newPixel.x,
+        y: oldPixel.y - newPixel.y,
+      });
+    }
+
+    // Update previous positions ref for next comparison
+    prevPositionsRef.current = new Map(positions);
+
+    if (newOffsets.size === 0) return;
+
+    // Set offsets (agents render at new tile but visually start at old tile)
+    setAnimOffsets(newOffsets);
+
+    // Double-rAF: ensure the browser paints the offset before we clear it.
+    // First rAF waits for commit, second rAF triggers the transition to (0,0).
+    let innerRafId = 0;
+    const outerRafId = requestAnimationFrame(() => {
+      innerRafId = requestAnimationFrame(() => {
+        setAnimOffsets(new Map());
+      });
+    });
+
+    return () => {
+      cancelAnimationFrame(outerRafId);
+      if (innerRafId) cancelAnimationFrame(innerRafId);
+    };
   }, [positions, hexCenters]);
 
   // Build lookup: hex key -> agent
@@ -1773,15 +1993,20 @@ export default function HexBattleArena({
       const toCenter = hexCenters.get(toKey);
       const agent = agents.find((a) => a.id === move.agentId);
       const agentColor = agent ? CLASS_HEX_COLORS[agent.class].stroke : "#888";
+      // Trail opacity: 100% for current epoch, 50% for 1 epoch old
+      const epochAge = currentEpoch - (move.epoch ?? currentEpoch);
+      const trailOpacity = epochAge <= 0 ? 1 : 0.5;
       return {
         from: fromCenter,
         to: toCenter,
         color: agentColor,
         success: move.success,
         agentId: move.agentId,
+        trailOpacity,
+        epoch: move.epoch,
       };
     }).filter((t) => t.from && t.to);
-  }, [recentMoves, hexCenters, agents]);
+  }, [recentMoves, hexCenters, agents, currentEpoch]);
 
   // ---------------------------------------------------------------------------
   // Storm overlay data — derive set of storm tile keys + boundary edges
@@ -1807,33 +2032,33 @@ export default function HexBattleArena({
     <ShakeWrapper>
     <div className="relative">
       {/* Header */}
-      <div className="mb-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500">
+      <div className="mb-2 flex items-center justify-between sm:mb-4">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-gray-500 sm:text-sm">
             The Arena
           </h2>
-          <span className="rounded bg-blood/20 px-2 py-0.5 text-xs font-medium text-blood">
+          <span className="rounded bg-blood/20 px-1.5 py-0.5 text-[10px] font-medium text-blood sm:px-2 sm:text-xs">
             EPOCH {currentEpoch}
           </span>
         </div>
-        <div className="flex items-center gap-2 text-xs text-gray-600">
+        <div className="flex items-center gap-1.5 text-[10px] text-gray-600 sm:gap-2 sm:text-xs">
           <span className="text-white">{aliveCount}</span>/{agents.length}{" "}
           alive
-          <span className="ml-2 text-[9px] text-gray-700">37 tiles</span>
+          <span className="ml-1 hidden text-[9px] text-gray-700 sm:ml-2 sm:inline">37 tiles</span>
         </div>
       </div>
 
       {/* SVG Arena */}
-      <div className="relative mx-auto w-full" style={{ maxWidth: "820px" }}>
+      <div className="relative mx-auto w-full max-w-[820px] overflow-hidden">
         {/* Background ambient glow */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="h-48 w-48 rounded-full bg-blood/5 blur-3xl" />
+          <div className="h-32 w-32 rounded-full bg-blood/5 blur-3xl sm:h-48 sm:w-48" />
         </div>
 
         <svg
           viewBox={viewBox}
-          className="w-full"
-          style={{ minHeight: "500px" }}
+          className="w-full touch-manipulation"
+          preserveAspectRatio="xMidYMid meet"
           xmlns="http://www.w3.org/2000/svg"
         >
           {/* SVG Defs: filters and gradients */}
@@ -1937,7 +2162,7 @@ export default function HexBattleArena({
               });
           })}
 
-          {/* Hex tiles — all 37 */}
+          {/* Hex tiles — all 37 with per-tile terrain styling */}
           {ARENA_HEXES.map((hex) => {
             const key = `${hex.q},${hex.r}`;
             const center = hexCenters.get(key)!;
@@ -1948,6 +2173,13 @@ export default function HexBattleArena({
             const agentIsDead = agent && !agent.alive;
             const agentIsDying = !!agentIsDead && dyingAgents.has(agent!.id);
             const agentIsGhost = !!agentIsDead && !agentIsDying;
+
+            // Movement animation offset for this agent (if currently sliding)
+            const agentAnimOffset = agent ? animOffsets.get(agent.id) : undefined;
+
+            // Per-tile terrain classification
+            const tileIsStorm = stormKeySet.has(key);
+            const tileIsSafe = stormKeySet.size > 0 && !tileIsStorm;
 
             return (
               <HexTile
@@ -1960,6 +2192,10 @@ export default function HexBattleArena({
                 isAttackTarget={!!agent && attackedIds.has(agent.id)}
                 isDying={agentIsDying}
                 isGhost={agentIsGhost}
+                animOffset={agentAnimOffset}
+                isStormTile={tileIsStorm}
+                isSafeZone={tileIsSafe}
+                effectivePhase={effectivePhase}
               />
             );
           })}
@@ -2012,14 +2248,15 @@ export default function HexBattleArena({
             </>
           )}
 
-          {/* Movement trails */}
+          {/* Movement trails (persisted for 2 epochs with opacity fade) */}
           {movementTrails.map((trail, i) => (
             <MovementTrail
-              key={`trail-${trail.agentId}-${i}`}
+              key={`trail-${trail.agentId}-${trail.epoch}-${i}`}
               from={trail.from!}
               to={trail.to!}
               color={trail.color}
               success={trail.success}
+              trailOpacity={trail.trailOpacity}
             />
           ))}
 
@@ -2053,7 +2290,7 @@ export default function HexBattleArena({
       </div>
 
       {/* Mobile agent list (compact fallback below hex view) */}
-      <div className="mt-4 grid grid-cols-1 gap-2 min-[375px]:grid-cols-2 sm:grid-cols-3 lg:hidden">
+      <div className="mt-3 grid grid-cols-2 gap-1.5 sm:mt-4 sm:grid-cols-3 sm:gap-2 lg:hidden">
         {agents.map((agent) => {
           const cfg = CLASS_CONFIG[agent.class];
           const isDead = !agent.alive;
@@ -2067,7 +2304,7 @@ export default function HexBattleArena({
           return (
             <div
               key={agent.id}
-              className={`rounded border p-3 text-center text-xs transition-all duration-1000 sm:p-2 ${
+              className={`min-h-[44px] rounded border p-2 text-center text-xs transition-all duration-1000 sm:p-3 ${
                 mobileIsGhost
                   ? "pointer-events-none border-gray-800 bg-colosseum-surface/50 opacity-[0.4] grayscale"
                   : mobileIsDying
@@ -2138,41 +2375,42 @@ export default function HexBattleArena({
         })}
       </div>
 
-      {/* Legend */}
-      <div className="mt-3 flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[9px] uppercase tracking-wider text-gray-600">
+      {/* Legend -- compact on mobile, full on sm+ */}
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[8px] uppercase tracking-wider text-gray-600 sm:mt-3 sm:gap-x-4 sm:text-[9px]">
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-4 rounded-sm bg-blood/60" />
+          <span className="inline-block h-2 w-3 rounded-sm bg-blood/60 sm:w-4" />
           Attack
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-4 rounded-sm border border-accent bg-accent/30" />
+          <span className="inline-block h-2 w-3 rounded-sm border border-accent bg-accent/30 sm:w-4" />
           Defend
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-4 rounded-sm bg-green-500/50" />
+          <span className="inline-block h-2 w-3 rounded-sm bg-green-500/50 sm:w-4" />
           Correct
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block h-2 w-4 rounded-sm bg-blood/50" />
+          <span className="inline-block h-2 w-3 rounded-sm bg-blood/50 sm:w-4" />
           Wrong
         </span>
         <span className="flex items-center gap-1 [text-shadow:_0_0_8px_rgba(0,0,0,0.9)]">
-          <span className="inline-block h-2 w-4 rounded-sm bg-gray-700" />
+          <span className="inline-block h-2 w-3 rounded-sm bg-gray-700 sm:w-4" />
           REKT
         </span>
-        <span className="ml-2 flex items-center gap-1">
-          <span className="inline-block h-2 w-4 rounded-sm" style={{ background: "#2a1f0a", border: "2px solid #f59e0b" }} />
-          Lv4
+        {/* Tile level legend -- hidden on smallest screens */}
+        <span className="ml-2 hidden items-center gap-1 sm:flex">
+          <span className="tile-cornucopia-glow inline-block h-2 w-4 rounded-sm" style={{ background: "#2a1f0a", border: "2px solid #f59e0b", boxShadow: "0 0 4px rgba(245,158,11,0.4)" }} />
+          Center
         </span>
-        <span className="flex items-center gap-1">
+        <span className="hidden items-center gap-1 sm:flex">
           <span className="inline-block h-2 w-4 rounded-sm" style={{ background: "#1f1a0d", border: "1px solid #b45309" }} />
           Lv3
         </span>
-        <span className="flex items-center gap-1">
+        <span className="hidden items-center gap-1 sm:flex">
           <span className="inline-block h-2 w-4 rounded-sm" style={{ background: "#141428", border: "1px solid #2a2a50" }} />
           Lv2
         </span>
-        <span className="flex items-center gap-1">
+        <span className="hidden items-center gap-1 sm:flex">
           <span className="inline-block h-2 w-4 rounded-sm" style={{ background: "#0c0c18", border: "1px dashed #1e1e38" }} />
           Lv1
         </span>

@@ -114,7 +114,7 @@ export default function BattleChat({
   };
 
   return (
-    <div className="flex max-h-[420px] flex-col overflow-hidden">
+    <div className="flex max-h-[420px] flex-col">
       {/* Header */}
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500">

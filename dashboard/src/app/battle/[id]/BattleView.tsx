@@ -1144,7 +1144,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
       {/* Battle Log -- full-width below arena for better readability */}
       <div
         className="card max-h-[300px] md:max-h-[380px]"
-        style={{ display: "flex", flexDirection: "column", overflow: "hidden" }}
+        style={{ display: "flex", flexDirection: "column" }}
       >
         <ActionFeed entries={feed} />
       </div>

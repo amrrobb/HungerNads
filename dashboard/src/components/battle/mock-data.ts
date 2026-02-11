@@ -9,6 +9,8 @@ export interface BattleAgent extends AgentState {
   attacked?: boolean;
   predictionResult?: "correct" | "wrong";
   isWinner?: boolean;
+  /** Ephemeral wallet address for on-chain token trades. */
+  walletAddress?: string;
 }
 
 /** Action feed entry */
@@ -16,7 +18,7 @@ export interface FeedEntry {
   id: string;
   timestamp: number;
   epoch: number;
-  type: "PREDICTION" | "ATTACK" | "DEFEND" | "DEATH" | "SPONSOR" | "MARKET";
+  type: "PREDICTION" | "ATTACK" | "DEFEND" | "DEATH" | "SPONSOR" | "MARKET" | "STORM" | "PHASE_CHANGE" | "TOKEN_TRADE";
   agentId?: string;
   agentName?: string;
   agentClass?: AgentClass;

@@ -12,6 +12,7 @@
 import { ArenaManager } from '../src/arena/arena';
 import { processEpoch, type EpochResult } from '../src/arena/epoch';
 import { PriceFeed } from '../src/arena/price-feed';
+import { computePhaseConfig } from '../src/arena/phases';
 import { resolvePredictions, type PredictionInput } from '../src/arena/prediction';
 import { resolveCombat, applyBleed, type CombatAgentState } from '../src/arena/combat';
 import { checkDeaths } from '../src/arena/death';
@@ -472,7 +473,7 @@ async function testDeathNotDetectedForAlive(): Promise<void> {
 async function testFullBattleFlow(): Promise<void> {
   section('Integration: Full Battle Flow');
 
-  const maxEpochs = 10;
+  const maxEpochs = computePhaseConfig(5).totalEpochs; // 5 agents → 8 epochs
   const arena = new ArenaManager(crypto.randomUUID(), { maxEpochs, epochIntervalMs: 0 });
 
   // Step 1: Spawn
@@ -560,7 +561,7 @@ async function testLessonExtraction(): Promise<void> {
   section('Integration: Lesson Extraction');
 
   // Run a small battle first
-  const arena = new ArenaManager(crypto.randomUUID(), { maxEpochs: 10, epochIntervalMs: 0 });
+  const arena = new ArenaManager(crypto.randomUUID(), { maxEpochs: computePhaseConfig(5).totalEpochs, epochIntervalMs: 0 });
   arena.spawnAgents();
   arena.startBattleImmediate();
 

@@ -19,11 +19,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   BattleWebSocket,
   type BattleEvent,
+  type BattlePhase,
   type EpochEndEvent,
   type EpochStartEvent,
   type BattleEndEvent,
+  type BattleStartingEvent,
   type GridStateEvent,
   type AgentMovedEvent,
+  type PhaseChangeEvent,
   type ItemType,
   type TileType,
 } from '@/lib/websocket';
@@ -54,13 +57,31 @@ export interface StreamGridTile {
   items: { id: string; type: ItemType }[];
 }
 
-/** Recent agent movement from agent_moved events (cleared each epoch). */
+/** Current battle phase state derived from phase_change WS events. */
+export interface StreamPhaseState {
+  /** Current phase name. */
+  phase: BattlePhase;
+  /** Epochs remaining in the current phase (decremented on each epoch_start). */
+  epochsRemaining: number;
+  /** Whether combat is enabled in the current phase. */
+  combatEnabled: boolean;
+  /** Storm ring level for the current phase. */
+  stormRing: number;
+  /** Epoch number when this phase started. */
+  phaseStartEpoch: number;
+  /** Total epochs in this phase (computed: phaseStartEpoch + epochsRemaining - 1 at transition). */
+  phaseTotalEpochs: number;
+}
+
+/** Recent agent movement from agent_moved events (persisted for 2 epochs with opacity fade). */
 export interface RecentMove {
   agentId: string;
   agentName: string;
   from: { q: number; r: number };
   to: { q: number; r: number };
   success: boolean;
+  /** Epoch number when this move occurred, used for trail age / opacity calculation. */
+  epoch: number;
 }
 
 /** Agent position from the grid_state event (agentId -> hex coord). */
@@ -85,6 +106,12 @@ export interface UseBattleStreamResult {
   agentPositions: StreamAgentPositions;
   /** Recent movement events from the current epoch (cleared on epoch_start). */
   recentMoves: RecentMove[];
+  /** Current battle phase state (null until first phase_change event or client-side computation). */
+  phaseState: StreamPhaseState | null;
+  /** Storm tile coordinates from the most recent grid_state event. Empty during LOOT. */
+  stormTiles: { q: number; r: number }[];
+  /** Agent wallet addresses from battle_starting event (agentId -> address). */
+  agentWallets: Record<string, string>;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -104,8 +131,13 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
   const [gridTiles, setGridTiles] = useState<StreamGridTile[]>([]);
   const [agentPositions, setAgentPositions] = useState<StreamAgentPositions>({});
   const [recentMoves, setRecentMoves] = useState<RecentMove[]>([]);
+  const [phaseState, setPhaseState] = useState<StreamPhaseState | null>(null);
+  const [stormTiles, setStormTiles] = useState<{ q: number; r: number }[]>([]);
+  const [agentWallets, setAgentWallets] = useState<Record<string, string>>({});
 
   const wsRef = useRef<BattleWebSocket | null>(null);
+  /** Ref tracking latest epoch number for use inside event callback (avoids stale closure). */
+  const latestEpochRef = useRef(0);
 
   // Process incoming events and update derived state
   const handleEvent = useCallback((event: BattleEvent) => {
@@ -118,10 +150,20 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
     switch (event.type) {
       case 'epoch_start': {
         const e = event as EpochStartEvent;
-        setLatestEpoch(e.data.epochNumber);
+        const newEpoch = e.data.epochNumber;
+        latestEpochRef.current = newEpoch;
+        setLatestEpoch(newEpoch);
         setMarketData(e.data.marketData);
-        // Clear movement trails from previous epoch
-        setRecentMoves([]);
+        // Prune movement trails older than 2 epochs (keep current + 1 previous)
+        setRecentMoves((prev) =>
+          prev.filter((m) => newEpoch - m.epoch < 2)
+        );
+        // Decrement epochs remaining in current phase (if tracked)
+        setPhaseState((prev) => {
+          if (!prev) return prev;
+          const remaining = Math.max(0, prev.epochsRemaining - 1);
+          return { ...prev, epochsRemaining: remaining };
+        });
         break;
       }
 
@@ -156,7 +198,20 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
       case 'grid_state': {
         const e = event as GridStateEvent;
         setGridTiles(e.data.tiles);
-        setAgentPositions(e.data.agentPositions);
+        // Merge dead agent positions into agentPositions so the frontend
+        // can render ghosts at their last known tile. Living agents from
+        // agentPositions take priority (dead agents are only added if not
+        // already present as a live occupant).
+        const mergedPositions = { ...e.data.agentPositions };
+        if (e.data.deadAgentPositions) {
+          for (const [id, pos] of Object.entries(e.data.deadAgentPositions)) {
+            if (!mergedPositions[id]) {
+              mergedPositions[id] = pos;
+            }
+          }
+        }
+        setAgentPositions(mergedPositions);
+        setStormTiles(e.data.stormTiles ?? []);
         break;
       }
 
@@ -170,8 +225,36 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
             from: e.data.from,
             to: e.data.to,
             success: e.data.success,
+            epoch: latestEpochRef.current,
           },
         ]);
+        break;
+      }
+
+      case 'battle_starting': {
+        const e = event as BattleStartingEvent;
+        const wallets: Record<string, string> = {};
+        for (const agent of e.data.agents) {
+          if (agent.walletAddress) {
+            wallets[agent.id] = agent.walletAddress;
+          }
+        }
+        if (Object.keys(wallets).length > 0) {
+          setAgentWallets(wallets);
+        }
+        break;
+      }
+
+      case 'phase_change': {
+        const e = event as PhaseChangeEvent;
+        setPhaseState({
+          phase: e.data.phase,
+          epochsRemaining: e.data.epochsRemaining,
+          combatEnabled: e.data.combatEnabled,
+          stormRing: e.data.stormRing,
+          phaseStartEpoch: e.data.epochNumber,
+          phaseTotalEpochs: e.data.epochsRemaining,
+        });
         break;
       }
 
@@ -214,6 +297,9 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
     gridTiles,
     agentPositions,
     recentMoves,
+    phaseState,
+    stormTiles,
+    agentWallets,
   };
 }
 

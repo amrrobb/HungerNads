@@ -28,7 +28,9 @@ export default function LayoutShell({
       <Navbar />
       {/* pb-20 on mobile to account for fixed bottom tab bar */}
       <main className="mx-auto max-w-7xl px-4 py-8 pb-24 md:pb-8">
-        {children}
+        <div key={pathname} className="page-fade-in">
+          {children}
+        </div>
       </main>
       <BottomTabs />
     </>

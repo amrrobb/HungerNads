@@ -71,6 +71,7 @@ export class MoltbookPoster {
     }>;
     winnerId: string | null;
     config?: { maxEpochs?: number };
+    phaseConfig?: { totalEpochs: number };
   }): Promise<boolean> {
     try {
       // Step 0: Ensure the submolt exists
@@ -82,7 +83,7 @@ export class MoltbookPoster {
         ? agentList.find((a) => a.id === battleState.winnerId)
         : null;
 
-      const maxEpochs = battleState.config?.maxEpochs ?? 10;
+      const maxEpochs = battleState.phaseConfig?.totalEpochs ?? battleState.config?.maxEpochs ?? 8;
       const wasTimeout = battleState.epoch >= maxEpochs;
 
       const ctx: BattlePostContext = {

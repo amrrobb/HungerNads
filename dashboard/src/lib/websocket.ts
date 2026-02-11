@@ -141,6 +141,25 @@ export interface TokenSellEvent {
   };
 }
 
+/** Agent-initiated token trade during a battle (buy-only, per-agent wallet). */
+export interface AgentTokenTradeEvent {
+  type: 'agent_token_trade';
+  data: {
+    agentId: string;
+    agentName: string;
+    action: 'buy' | 'sell';
+    /** MON amount (human-readable string, e.g. "0.001") */
+    amount: string;
+    /** Trigger reason: prediction win, kill trophy, etc. */
+    reason: string;
+    /** On-chain tx hash (empty string if tx failed) */
+    txHash: string;
+    epochNumber: number;
+    /** Agent's ephemeral wallet address that sent the transaction. */
+    agentWallet?: string;
+  };
+}
+
 export interface CurveUpdateEvent {
   type: 'curve_update';
   data: {
@@ -189,6 +208,10 @@ export interface GridStateEvent {
       items: { id: string; type: ItemType }[];
     }[];
     agentPositions: Record<string, { q: number; r: number }>;
+    /** Positions of dead agents at their last known tile (for ghost rendering). */
+    deadAgentPositions?: Record<string, { q: number; r: number }>;
+    /** Storm tiles for the current phase. Empty/undefined during LOOT. */
+    stormTiles?: { q: number; r: number }[];
   };
 }
 
@@ -202,6 +225,7 @@ export interface AgentMovedEvent {
     to: { q: number; r: number };
     success: boolean;
     reason?: string;
+    epochNumber: number;
   };
 }
 
@@ -262,6 +286,91 @@ export interface SponsorBoostEvent {
   };
 }
 
+// ─── Lobby Events ─────────────────────────────────────────────────────
+
+/** Broadcast when an agent joins the lobby or countdown status changes. */
+export interface LobbyUpdateEvent {
+  type: 'lobby_update';
+  data: {
+    battleId: string;
+    status: 'LOBBY' | 'COUNTDOWN';
+    agents: Array<{
+      id: string;
+      name: string;
+      class: string;
+      imageUrl?: string;
+      position: number;
+    }>;
+    playerCount: number;
+    maxPlayers: number;
+    countdownEndsAt?: string;
+    feeAmount?: string;
+  };
+}
+
+/** Emitted when countdown ends and the battle is about to begin. */
+export interface BattleStartingEvent {
+  type: 'battle_starting';
+  data: {
+    battleId: string;
+    agents: Array<{
+      id: string;
+      name: string;
+      class: string;
+      position: { q: number; r: number };
+      walletAddress?: string;
+    }>;
+    startsAt: number;
+  };
+}
+
+// ─── Battle Phase Types ──────────────────────────────────────────────
+
+/** Battle phase names matching the backend BattlePhase type. */
+export type BattlePhase = 'LOOT' | 'HUNT' | 'BLOOD' | 'FINAL_STAND';
+
+/**
+ * Emitted when the battle transitions to a new phase.
+ * Creates dramatic moments: "THE HUNT BEGINS!", "BLOOD PHASE!", "FINAL STAND!"
+ */
+export interface PhaseChangeEvent {
+  type: 'phase_change';
+  data: {
+    /** The new phase that just started. */
+    phase: BattlePhase;
+    /** The previous phase that just ended. */
+    previousPhase: BattlePhase;
+    /** Storm ring level for the new phase (-1=none, 3=Lv1, 2=Lv1+Lv2, 1=Lv1+Lv2+Lv3). */
+    stormRing: number;
+    /** Epochs remaining in the new phase. */
+    epochsRemaining: number;
+    /** Whether combat is enabled in the new phase. */
+    combatEnabled: boolean;
+    /** Epoch number when this transition occurred. */
+    epochNumber: number;
+  };
+}
+
+/**
+ * Emitted when an agent takes storm damage from standing on a dangerous tile.
+ * Storm damage increases as phases progress and escalates within each phase.
+ */
+export interface StormDamageEvent {
+  type: 'storm_damage';
+  data: {
+    agentId: string;
+    agentName: string;
+    /** Damage dealt by the storm this epoch. */
+    damage: number;
+    /** The tile coordinate where the agent was standing. */
+    tile: { q: number; r: number };
+    /** The battle phase during which the damage was dealt. */
+    phase: BattlePhase;
+    /** Agent's HP after storm damage. */
+    hpAfter: number;
+  };
+}
+
 export type BattleEvent =
   | EpochStartEvent
   | AgentActionEvent
@@ -280,7 +389,12 @@ export type BattleEvent =
   | AgentMovedEvent
   | ItemSpawnedEvent
   | ItemPickedUpEvent
-  | TrapTriggeredEvent;
+  | TrapTriggeredEvent
+  | LobbyUpdateEvent
+  | BattleStartingEvent
+  | PhaseChangeEvent
+  | StormDamageEvent
+  | AgentTokenTradeEvent;
 
 export type BattleEventHandler = (event: BattleEvent) => void;
 export type ConnectionHandler = (connected: boolean) => void;

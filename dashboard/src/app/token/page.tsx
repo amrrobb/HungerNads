@@ -33,7 +33,7 @@ import {
 import useTokenPrice from '@/hooks/useTokenPrice';
 import { useFetch } from '@/hooks/useFetch';
 import { HNADS_TOKEN_ADDRESS } from '@/lib/wallet';
-import WalletConnect from '@/components/WalletConnect';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 
 // ---------------------------------------------------------------------------
 // API types
@@ -368,7 +368,7 @@ function FaucetSection({
           <p className="text-sm text-gray-500">
             Connect your wallet to claim tokens
           </p>
-          <WalletConnect />
+          <ConnectButton />
         </div>
       ) : statusLoading ? (
         <div className="space-y-3">

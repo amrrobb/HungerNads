@@ -18,6 +18,15 @@ import type {
   SkillName,
 } from './schemas';
 import type { LLMKeys } from '../llm';
+import type { HexGridState } from '../arena/types/hex';
+import type { BattlePhase } from '../arena/types/status';
+import {
+  getNeighbors,
+  isStormTile,
+  closestTo,
+  findNearestItemTile,
+  hexEquals,
+} from '../arena/hex-grid';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -53,6 +62,14 @@ export abstract class BaseAgent {
   public position: HexCoord | null;
   /** Optional LLM API keys for Workers env (no process.env). */
   public llmKeys?: LLMKeys;
+  /**
+   * Enriched spatial context string set by the epoch processor before each
+   * decision round. Includes position, tile level, phase info, storm boundary,
+   * nearby items, nearby agents, and distance to center.
+   *
+   * Transient — overwritten each epoch, not persisted.
+   */
+  public currentSpatialContext: string;
 
   // ── Skill System ──
   /** Epochs remaining until skill is available again. 0 = ready. */
@@ -90,6 +107,7 @@ export abstract class BaseAgent {
     this.allyId = null;
     this.allyName = null;
     this.allianceEpochsRemaining = 0;
+    this.currentSpatialContext = '';
   }
 
   // -------------------------------------------------------------------------
@@ -421,13 +439,95 @@ To use: Include "useSkill": true in your JSON response.${
 // ---------------------------------------------------------------------------
 
 /**
+ * Optional context for phase-aware fallback movement.
+ * When provided, getDefaultActions will compute a smart fallback move
+ * instead of leaving agents stationary.
+ */
+export interface FallbackContext {
+  /** Current battle phase (determines storm zone). */
+  phase: BattlePhase;
+  /** Full hex grid state (for neighbor queries and item scanning). */
+  grid: HexGridState;
+}
+
+/** Center of the hex grid (axial origin). */
+const CENTER: HexCoord = { q: 0, r: 0 };
+
+/**
+ * Compute a phase-aware fallback move for an agent whose LLM failed.
+ *
+ * Priority:
+ *   1. Escape storm -- if standing on a storm tile, move to the safe neighbor
+ *      closest to center.
+ *   2. LOOT phase -- move toward center (cornucopia rush).
+ *   3. Nearest item -- if any items are on the grid, approach the closest one.
+ *   4. Move toward center -- default convergence for HUNT/BLOOD/FINAL_STAND.
+ *
+ * Returns null only if every neighbor is also in the storm (agent is trapped)
+ * or the agent has no position.
+ */
+export function getFallbackMove(
+  agent: BaseAgent,
+  ctx: FallbackContext,
+): HexCoord | null {
+  const pos = agent.position;
+  if (!pos) return null;
+
+  const neighbors = getNeighbors(pos, ctx.grid);
+  if (neighbors.length === 0) return null;
+
+  // Filter to safe (non-storm) neighbors
+  const safeNeighbors = neighbors.filter(n => !isStormTile(n, ctx.phase));
+
+  // Priority 1: escape storm tile
+  if (isStormTile(pos, ctx.phase)) {
+    if (safeNeighbors.length > 0) {
+      return closestTo(safeNeighbors, CENTER);
+    }
+    // All neighbors are also storm -- move toward center anyway (least damage)
+    return closestTo(neighbors, CENTER);
+  }
+
+  // Use safe neighbors for remaining priorities (stay out of storm)
+  const moveCandidates = safeNeighbors.length > 0 ? safeNeighbors : neighbors;
+
+  // Priority 2: LOOT phase -- rush toward center (cornucopia items)
+  if (ctx.phase === 'LOOT') {
+    return closestTo(moveCandidates, CENTER);
+  }
+
+  // Priority 3: move toward nearest item on the grid
+  const nearestItem = findNearestItemTile(pos, ctx.grid);
+  if (nearestItem && !hexEquals(pos, nearestItem)) {
+    return closestTo(moveCandidates, nearestItem);
+  }
+
+  // Priority 4: converge toward center (default for HUNT/BLOOD/FINAL_STAND)
+  return closestTo(moveCandidates, CENTER);
+}
+
+/**
  * Safe fallback actions when LLM fails or returns invalid data.
  * Small stake, random asset, no combat. Keeps the agent alive.
+ *
+ * When `ctx` is provided, includes a phase-aware fallback move so agents
+ * never stay still (unless completely surrounded by storm with no safe exits).
  */
-export function getDefaultActions(agent: BaseAgent): EpochActions {
+export function getDefaultActions(agent: BaseAgent, ctx?: FallbackContext): EpochActions {
   const assets = ['ETH', 'BTC', 'SOL', 'MON'] as const;
   const asset = assets[Math.floor(Math.random() * assets.length)];
   const direction = Math.random() > 0.5 ? 'UP' : 'DOWN';
+
+  // Compute smart fallback move if context is available
+  const move = ctx ? getFallbackMove(agent, ctx) : undefined;
+
+  // Build reasoning string with movement info
+  let reasoning = `[FALLBACK] ${agent.name} defaulted to safe prediction.`;
+  if (move) {
+    reasoning = `[FALLBACK] ${agent.name} defaulted to safe prediction, moving to (${move.q},${move.r}).`;
+  } else if (ctx) {
+    reasoning = `[FALLBACK] ${agent.name} defaulted to safe prediction (no safe move available).`;
+  }
 
   return {
     prediction: {
@@ -436,7 +536,7 @@ export function getDefaultActions(agent: BaseAgent): EpochActions {
       stake: 5, // Minimum stake - play it safe
     },
     combatStance: 'NONE',
-    // No combat - just survive
-    reasoning: `[FALLBACK] ${agent.name} defaulted to safe prediction.`,
+    move: move ?? undefined,
+    reasoning,
   };
 }

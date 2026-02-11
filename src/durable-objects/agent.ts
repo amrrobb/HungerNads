@@ -11,7 +11,7 @@
 
 import type { Env } from '../index';
 import type { AgentClass, AgentState, EpochActions, MarketData, ArenaContext } from '../agents';
-import { agentDecision, type LLMKeys } from '../llm';
+import { agentDecision, getLLM, type LLMKeys } from '../llm';
 import { PERSONALITIES } from '../agents/personalities';
 import { EpochActionsSchema } from '../agents/schemas';
 
@@ -262,7 +262,8 @@ export class AgentDO implements DurableObject {
 
   /**
    * Extract and store lessons from a completed battle.
-   * Placeholder: will use LLM to generate insights from battle history.
+   * Uses LLM to generate 2-3 specific, actionable lessons from battle history.
+   * Falls back to basic outcome-based lessons if LLM is unavailable or fails.
    */
   async learn(battleHistory: {
     battleId: string;
@@ -270,27 +271,94 @@ export class AgentDO implements DurableObject {
     placement: number;
     killedBy?: string;
     kills: string[];
+    /** Optional battle summary for richer LLM context. */
+    battleSummary?: string;
   }): Promise<Lesson[]> {
     const lessons = (await this.state.storage.get<Lesson[]>('lessons')) ?? [];
     const stats = (await this.state.storage.get<AgentStats>('stats')) ?? { ...DEFAULT_STATS };
+    const agentClass = (await this.state.storage.get<AgentClass>('class')) ?? 'WARRIOR';
+    const name = (await this.state.storage.get<string>('name')) ?? 'Unknown';
 
-    // TODO: Use LLM to generate meaningful lessons from battle history
-    // For now, create a basic lesson from the outcome
-    const newLesson: Lesson = {
-      battleId: battleHistory.battleId,
-      epoch: battleHistory.epochs,
-      context: `Battle lasted ${battleHistory.epochs} epochs. Placed #${battleHistory.placement}.`,
-      outcome: battleHistory.killedBy
-        ? `Killed by ${battleHistory.killedBy}`
-        : battleHistory.placement === 1
-          ? 'Won the battle'
-          : 'Survived but did not win',
-      learning: 'Pending LLM analysis.',
-      applied: '',
-      createdAt: new Date().toISOString(),
+    // Build basic context and outcome strings
+    const context = `Battle lasted ${battleHistory.epochs} epochs. Placed #${battleHistory.placement}.`;
+    const outcome = battleHistory.killedBy
+      ? `Killed by ${battleHistory.killedBy}`
+      : battleHistory.placement === 1
+        ? 'Won the battle'
+        : 'Survived but did not win';
+
+    // Attempt LLM-generated lessons
+    let newLessons: Lesson[] = [];
+    const llmKeys: LLMKeys = {
+      groqApiKey: this.env.GROQ_API_KEY,
+      googleApiKey: this.env.GOOGLE_API_KEY,
+      openrouterApiKey: this.env.OPENROUTER_API_KEY,
     };
+    const hasKeys = !!(llmKeys.groqApiKey || llmKeys.googleApiKey || llmKeys.openrouterApiKey);
 
-    lessons.push(newLesson);
+    if (hasKeys) {
+      try {
+        const llm = getLLM(llmKeys);
+        const summaryBlock = battleHistory.battleSummary
+          ? `\nBATTLE DETAILS:\n${battleHistory.battleSummary}`
+          : '';
+        const response = await llm.chat([
+          {
+            role: 'system',
+            content: `You are analyzing a gladiator battle in the HUNGERNADS arena. Generate exactly 2-3 short, specific lessons this agent learned. Each lesson should reference actual battle events. Respond with ONLY a JSON array of objects with fields: "learning" (one sentence, specific), "applied" (how to apply this next time, one sentence).`,
+          },
+          {
+            role: 'user',
+            content: `AGENT: ${name} (${agentClass})
+RESULT: Placed #${battleHistory.placement} out of 5-8 agents.
+${outcome}
+Kills: ${battleHistory.kills.length > 0 ? battleHistory.kills.join(', ') : 'None'}
+Epochs survived: ${battleHistory.epochs}${summaryBlock}
+
+Generate 2-3 specific lessons.`,
+          },
+        ], { maxTokens: 300, temperature: 0.7 });
+
+        let jsonStr = response.content.trim();
+        if (jsonStr.startsWith('```')) {
+          jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        }
+        const parsed = JSON.parse(jsonStr) as Array<{ learning: string; applied: string }>;
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          newLessons = parsed.slice(0, 3).map((l) => ({
+            battleId: battleHistory.battleId,
+            epoch: battleHistory.epochs,
+            context,
+            outcome,
+            learning: l.learning || 'No lesson extracted.',
+            applied: l.applied || '',
+            createdAt: new Date().toISOString(),
+          }));
+        }
+      } catch (err) {
+        console.warn(`[AgentDO:${name}] LLM lesson generation failed, using fallback:`, err);
+      }
+    }
+
+    // Fallback: basic lesson if LLM failed or unavailable
+    if (newLessons.length === 0) {
+      newLessons = [{
+        battleId: battleHistory.battleId,
+        epoch: battleHistory.epochs,
+        context,
+        outcome,
+        learning: battleHistory.placement === 1
+          ? `Won the battle after ${battleHistory.epochs} epochs with ${battleHistory.kills.length} kill(s).`
+          : battleHistory.killedBy
+            ? `Was eliminated by ${battleHistory.killedBy} after ${battleHistory.epochs} epochs.`
+            : `Survived ${battleHistory.epochs} epochs but placed #${battleHistory.placement}.`,
+        applied: '',
+        createdAt: new Date().toISOString(),
+      }];
+    }
+
+    lessons.push(...newLessons);
 
     // Keep only last 50 lessons to manage storage
     const trimmedLessons = lessons.slice(-50);
@@ -308,7 +376,7 @@ export class AgentDO implements DurableObject {
     await this.state.storage.put('lessons', trimmedLessons);
     await this.state.storage.put('stats', stats);
 
-    return [newLesson];
+    return newLessons;
   }
 
   // ─── Profile / State ──────────────────────────────────────────

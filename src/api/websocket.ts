@@ -24,6 +24,7 @@ import type { DeathEvent } from '../arena/death';
 import type { MarketData, AllianceEvent as AllianceEventData } from '../agents/schemas';
 import type { CurveEvent } from '../chain/nadfun';
 import type { TileType, TileLevel, ItemType } from '../arena/types/hex';
+import type { BattlePhase } from '../arena/types/status';
 import type { HexGridState } from '../arena/hex-grid';
 
 // ─── Event Types ──────────────────────────────────────────────────────────────
@@ -131,6 +132,25 @@ export interface TokenSellEvent {
     amountOut: string;   // MON received (wei as string)
     txHash: string;
     blockNumber: string;
+  };
+}
+
+/** Agent-initiated token trade during a battle (buy-only, per-agent wallet). */
+export interface AgentTokenTradeEvent {
+  type: 'agent_token_trade';
+  data: {
+    agentId: string;
+    agentName: string;
+    action: 'buy' | 'sell';
+    /** MON amount (human-readable string, e.g. "0.001") */
+    amount: string;
+    /** Trigger reason: prediction win, kill trophy, etc. */
+    reason: string;
+    /** On-chain tx hash (empty string if tx failed) */
+    txHash: string;
+    epochNumber: number;
+    /** Agent's ephemeral wallet address that sent the transaction. */
+    agentWallet?: string;
   };
 }
 
@@ -267,6 +287,10 @@ export interface GridStateEvent {
       items: { id: string; type: ItemType }[];
     }[];
     agentPositions: Record<string, { q: number; r: number }>;
+    /** Positions of dead agents at their last known tile (for ghost rendering). */
+    deadAgentPositions?: Record<string, { q: number; r: number }>;
+    /** Storm tiles for the current phase. Empty during LOOT. */
+    stormTiles?: { q: number; r: number }[];
   };
 }
 
@@ -331,6 +355,90 @@ export interface TrapTriggeredEvent {
   };
 }
 
+/**
+ * Emitted when an agent joins or leaves a lobby, or lobby status changes.
+ */
+export interface LobbyUpdateEvent {
+  type: 'lobby_update';
+  data: {
+    battleId: string;
+    status: 'LOBBY' | 'COUNTDOWN';
+    agents: Array<{
+      id: string;
+      name: string;
+      class: string;
+      imageUrl?: string;
+      position: number;
+    }>;
+    playerCount: number;
+    maxPlayers: number;
+    countdownEndsAt?: string;
+    feeAmount?: string;
+  };
+}
+
+/**
+ * Emitted when the countdown ends and the battle is about to begin.
+ * Sent by transitionToActive() (tk-csc.10) to notify spectators that agents
+ * have been placed on the hex grid and the first epoch is imminent.
+ */
+export interface BattleStartingEvent {
+  type: 'battle_starting';
+  data: {
+    battleId: string;
+    agents: Array<{
+      id: string;
+      name: string;
+      class: string;
+      position: { q: number; r: number };
+      walletAddress?: string;
+    }>;
+    startsAt: number;
+  };
+}
+
+/**
+ * Emitted when the battle transitions to a new phase.
+ * Creates dramatic moments: "THE HUNT BEGINS!", "BLOOD PHASE!", "FINAL STAND!"
+ */
+export interface PhaseChangeEvent {
+  type: 'phase_change';
+  data: {
+    /** The new phase that just started. */
+    phase: BattlePhase;
+    /** The previous phase that just ended. */
+    previousPhase: BattlePhase;
+    /** Storm ring level for the new phase (-1=none, 3=Lv1, 2=Lv1+Lv2, 1=Lv1+Lv2+Lv3). */
+    stormRing: number;
+    /** Epochs remaining in the new phase. */
+    epochsRemaining: number;
+    /** Whether combat is enabled in the new phase. */
+    combatEnabled: boolean;
+    /** Epoch number when this transition occurred. */
+    epochNumber: number;
+  };
+}
+
+/**
+ * Emitted when an agent takes storm damage from standing on a dangerous tile.
+ * Storm damage increases as phases progress and escalates within each phase.
+ */
+export interface StormDamageEvent {
+  type: 'storm_damage';
+  data: {
+    agentId: string;
+    agentName: string;
+    /** Damage dealt by the storm this epoch. */
+    damage: number;
+    /** The tile coordinate where the agent was standing. */
+    tile: { q: number; r: number };
+    /** The battle phase during which the damage was dealt. */
+    phase: BattlePhase;
+    /** Agent's HP after storm damage. */
+    hpAfter: number;
+  };
+}
+
 /** Discriminated union of all events streamed to spectators. */
 export type BattleEvent =
   | EpochStartEvent
@@ -353,7 +461,12 @@ export type BattleEvent =
   | AgentMovedEvent
   | ItemSpawnedEvent
   | ItemPickedUpEvent
-  | TrapTriggeredEvent;
+  | TrapTriggeredEvent
+  | LobbyUpdateEvent
+  | BattleStartingEvent
+  | PhaseChangeEvent
+  | StormDamageEvent
+  | AgentTokenTradeEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 
@@ -515,6 +628,27 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     },
   });
 
+  // ── 1.1. Phase change (if a phase transition occurred this epoch) ──
+  if (result.phaseChanged) {
+    const PHASE_STORM_RING: Record<string, number> = {
+      LOOT: -1, HUNT: 3, BLOOD: 2, FINAL_STAND: 1,
+    };
+    const PHASE_COMBAT: Record<string, boolean> = {
+      LOOT: false, HUNT: true, BLOOD: true, FINAL_STAND: true,
+    };
+    events.push({
+      type: 'phase_change',
+      data: {
+        phase: result.phaseChanged.to,
+        previousPhase: result.phaseChanged.from,
+        stormRing: PHASE_STORM_RING[result.phaseChanged.to] ?? -1,
+        epochsRemaining: result.epochsRemainingInPhase ?? 0,
+        combatEnabled: PHASE_COMBAT[result.phaseChanged.to] ?? true,
+        epochNumber: result.epochNumber,
+      },
+    });
+  }
+
   // ── 1.5. Sponsor boosts (parachute drops from the crowd) ───────────
   if (result.sponsorBoosts) {
     for (const boost of result.sponsorBoosts) {
@@ -675,6 +809,23 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
     }
   }
 
+  // ── 4.7. Storm damage events ────────────────────────────────────
+  if (result.stormDamageResults) {
+    for (const sd of result.stormDamageResults) {
+      events.push({
+        type: 'storm_damage',
+        data: {
+          agentId: sd.agentId,
+          agentName: sd.agentName,
+          damage: sd.damage,
+          tile: { q: sd.tile.q, r: sd.tile.r },
+          phase: sd.phase,
+          hpAfter: sd.hpAfter,
+        },
+      });
+    }
+  }
+
   // ── 5. Agent deaths ───────────────────────────────────────────────
   for (const death of result.deaths) {
     events.push({
@@ -718,8 +869,15 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
  *
  * The grid's tiles Map is flattened to a serializable array with occupant and
  * item info for each tile.
+ *
+ * @param grid - Current hex grid state
+ * @param stormTiles - Optional array of storm tile coordinates (from getStormTileCoords)
  */
-export function gridStateToEvent(grid: HexGridState): GridStateEvent {
+export function gridStateToEvent(
+  grid: HexGridState,
+  stormTiles?: { q: number; r: number }[],
+  agents?: Map<string, { position: { q: number; r: number } | null; isAlive: boolean }>,
+): GridStateEvent {
   const tiles: GridStateEvent['data']['tiles'] = [];
   const agentPositions: Record<string, { q: number; r: number }> = {};
 
@@ -738,8 +896,27 @@ export function gridStateToEvent(grid: HexGridState): GridStateEvent {
     }
   }
 
-  return {
-    type: 'grid_state',
-    data: { tiles, agentPositions },
-  };
+  const data: GridStateEvent['data'] = { tiles, agentPositions };
+
+  // Collect dead agent positions for ghost rendering.
+  // Dead agents are removed from tile occupants (removeAgentFromGrid clears occupantId)
+  // but retain their last position on the BaseAgent instance.
+  // Include them so the frontend can render ghosts at their death location.
+  if (agents) {
+    const deadAgentPositions: Record<string, { q: number; r: number }> = {};
+    for (const [id, agent] of agents) {
+      if (!agent.isAlive && agent.position) {
+        deadAgentPositions[id] = { q: agent.position.q, r: agent.position.r };
+      }
+    }
+    if (Object.keys(deadAgentPositions).length > 0) {
+      data.deadAgentPositions = deadAgentPositions;
+    }
+  }
+
+  if (stormTiles && stormTiles.length > 0) {
+    data.stormTiles = stormTiles;
+  }
+
+  return { type: 'grid_state', data };
 }

@@ -118,6 +118,7 @@ export class GamblerAgent extends BaseAgent {
         others,
         this.lessons.slice(-3).map(l => l.learning),
         this.llmKeys,
+        this.currentSpatialContext || undefined,
       );
 
       // Use the LLM's reasoning but override the mechanical decisions with chaos

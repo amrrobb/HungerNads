@@ -135,6 +135,23 @@ export interface TokenSellEvent {
   };
 }
 
+/** Agent-initiated token trade during a battle (victory buy / panic sell). */
+export interface AgentTokenTradeEvent {
+  type: 'agent_token_trade';
+  data: {
+    agentId: string;
+    agentName: string;
+    action: 'buy' | 'sell';
+    /** MON amount (human-readable string, e.g. "0.001") */
+    amount: string;
+    /** Trigger reason: prediction win, combat damage, etc. */
+    reason: string;
+    /** On-chain tx hash (empty string if tx failed) */
+    txHash: string;
+    epochNumber: number;
+  };
+}
+
 export interface CurveUpdateEvent {
   type: 'curve_update';
   data: {
@@ -443,7 +460,8 @@ export type BattleEvent =
   | LobbyUpdateEvent
   | BattleStartingEvent
   | PhaseChangeEvent
-  | StormDamageEvent;
+  | StormDamageEvent
+  | AgentTokenTradeEvent;
 
 // ─── Broadcast Helper ─────────────────────────────────────────────────────────
 

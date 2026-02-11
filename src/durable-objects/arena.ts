@@ -15,7 +15,7 @@
 
 import type { Env } from '../index';
 import type { AgentClass, AgentState, EpochActions, MarketData } from '../agents';
-import type { LLMKeys } from '../llm';
+import { getLLM, type LLMKeys } from '../llm';
 import {
   type BattleEvent,
   broadcastEvent,
@@ -30,7 +30,7 @@ import { ArenaManager, computePhaseConfig, type PhaseConfig } from '../arena/are
 import { processEpoch as runEpoch, type EpochResult } from '../arena/epoch';
 import type { BattlePhase } from '../arena/types/status';
 import { PriceFeed } from '../arena/price-feed';
-import { placeAgent, getStormTileCoords } from '../arena/hex-grid';
+import { createGrid, placeAgent, getStormTileCoords, getOuterRingTiles } from '../arena/hex-grid';
 import { getCurrentPhase } from '../arena/phases';
 import { WarriorAgent } from '../agents/warrior';
 import { TraderAgent } from '../agents/trader';
@@ -45,6 +45,7 @@ import { updateBattle } from '../db/schema';
 import { createChainClient, type AgentResult as ChainAgentResult } from '../chain/client';
 import { createMoltbookPoster } from '../moltbook';
 import { RatingManager, extractBattlePerformances } from '../ranking';
+import { AgentMemory } from '../learning/memory';
 
 // Re-export BattleEvent for consumers that import from arena.ts
 export type { BattleEvent } from '../api/websocket';
@@ -346,6 +347,21 @@ export class ArenaDO implements DurableObject {
       };
     }
 
+    // Place agents on outer ring (Lv1) tiles — same as lobby flow
+    let grid = createGrid();
+    const outerTiles = getOuterRingTiles(grid);
+    const shuffled = [...outerTiles];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    for (let i = 0; i < agentIds.length; i++) {
+      const tile = shuffled[i % shuffled.length];
+      const pos = tile.coord;
+      grid = placeAgent(agentIds[i], pos, grid);
+      agents[agentIds[i]].position = { q: pos.q, r: pos.r };
+    }
+
     // Merge caller config with defaults
     const config: BattleConfig = { ...DEFAULT_BATTLE_CONFIG, ...battleConfig };
 
@@ -375,9 +391,13 @@ export class ArenaDO implements DurableObject {
       chainAgentMap[agentIds[i]] = i + 1;
     }
 
+    // Build grid snapshot for WS clients (initial positions + items)
+    const gridSnapshot = gridStateToEvent(grid);
+
     // Persist state
     await this.state.storage.put('battleState', battleState);
     await this.state.storage.put('chainAgentMap', chainAgentMap);
+    await this.state.storage.put('gridSnapshot', gridSnapshot);
 
     // Schedule the first epoch
     await this.state.storage.setAlarm(Date.now() + this.epochIntervalMs);
@@ -391,8 +411,11 @@ export class ArenaDO implements DurableObject {
       data: { agents, agentCount: agentIds.length },
     });
 
-    // Broadcast initial betting phase (OPEN)
+    // Broadcast initial grid state so spectators see agent positions
     const sockets = this.state.getWebSockets();
+    broadcastEvent(sockets, gridSnapshot);
+
+    // Broadcast initial betting phase (OPEN)
     broadcastEvent(sockets, {
       type: 'betting_phase_change',
       data: {
@@ -497,6 +520,11 @@ export class ArenaDO implements DurableObject {
 
     // ── Broadcast rich events to spectators ──────────────────────
     this.broadcastEpochResult(result, arena);
+
+    // ── Fire agent token trades (non-blocking) ──────────────────
+    // Agents auto-buy $HNADS on prediction wins, auto-sell on combat damage.
+    // Uses fire-and-forget pattern: tx failure must NOT break the game loop.
+    this.fireAgentTokenTrades(result, battleState);
 
     // ── Persist grid state for new WebSocket connections ─────────
     // Store the serialized grid snapshot so that spectators connecting
@@ -751,6 +779,13 @@ export class ArenaDO implements DurableObject {
         console.error(`[ArenaDO] TrueSkill rating update failed for ${battleState.battleId}:`, err);
       }
 
+      // ── Generate LLM-driven agent lessons ───────────────────────
+      // Fire-and-forget: lesson generation is non-blocking and non-fatal.
+      // Each agent gets 2-3 specific lessons stored in D1 for the profile page.
+      this.generateAgentLessons(battleState).catch((err) => {
+        console.error(`[ArenaDO] Lesson generation failed for ${battleState.battleId}:`, err);
+      });
+
       // Stop the curve stream — no more spectators after this
       this.stopCurveStream();
 
@@ -803,6 +838,125 @@ export class ArenaDO implements DurableObject {
   }
 
   /**
+   * Fire-and-forget agent token trades on nad.fun.
+   *
+   * On prediction win (positive hpChange): agent auto-buys $HNADS ("victory purchase").
+   * On combat damage (negative hpChangeTarget): agent auto-sells $HNADS ("panic sell").
+   *
+   * Amount: 0.001 MON per 10 HP gained/lost (proportional).
+   * Non-blocking: tx failure is logged but never breaks the game loop.
+   */
+  private fireAgentTokenTrades(result: EpochResult, battleState: BattleState): void {
+    if (!this.nadFunClient) return;
+
+    const tokenAddress = (this.env.NADFUN_TOKEN_ADDRESS ?? '0xe19fd60f5117Df0F23659c7bc16e2249b8dE7777') as Address;
+    const client = this.nadFunClient;
+    const sockets = this.state.getWebSockets();
+    const epochNumber = result.epochNumber;
+
+    // Build agent name lookup from battle state
+    const agentNames = new Map<string, { name: string; class: string }>();
+    for (const [id, agent] of Object.entries(battleState.agents)) {
+      agentNames.set(id, { name: agent.name, class: agent.class });
+    }
+
+    // ── Collect buy triggers: prediction wins ──────────────────────
+    for (const pred of result.predictionResults) {
+      if (pred.hpChange > 0) {
+        const agentInfo = agentNames.get(pred.agentId);
+        if (!agentInfo) continue;
+
+        // 0.001 MON per 10 HP gained, minimum 0.0001 MON
+        const monAmount = Math.max(0.0001, (pred.hpChange / 10) * 0.001);
+        const amountWei = BigInt(Math.round(monAmount * 1e18));
+
+        // Fire-and-forget: don't await
+        client.buyToken(tokenAddress, amountWei).then((txHash) => {
+          console.log(
+            `[TokenTrade] ${agentInfo.name} victory-bought $HNADS for ${monAmount.toFixed(4)} MON: ${txHash}`,
+          );
+          broadcastEvent(sockets, {
+            type: 'agent_token_trade',
+            data: {
+              agentId: pred.agentId,
+              agentName: agentInfo.name,
+              action: 'buy',
+              amount: monAmount.toFixed(4),
+              reason: `Prediction win (+${Math.round(pred.hpChange)} HP)`,
+              txHash,
+              epochNumber,
+            },
+          });
+        }).catch((err) => {
+          console.error(`[TokenTrade] Buy failed for ${agentInfo.name}:`, err);
+          // Still broadcast the event with empty txHash so spectators see the attempt
+          broadcastEvent(sockets, {
+            type: 'agent_token_trade',
+            data: {
+              agentId: pred.agentId,
+              agentName: agentInfo.name,
+              action: 'buy',
+              amount: monAmount.toFixed(4),
+              reason: `Prediction win (+${Math.round(pred.hpChange)} HP)`,
+              txHash: '',
+              epochNumber,
+            },
+          });
+        });
+      }
+    }
+
+    // ── Collect sell triggers: combat damage taken ─────────────────
+    for (const combat of result.combatResults) {
+      // Target took damage (negative hpChangeTarget)
+      if (combat.hpChangeTarget < 0) {
+        const agentInfo = agentNames.get(combat.targetId);
+        if (!agentInfo) continue;
+
+        const damageTaken = Math.abs(combat.hpChangeTarget);
+        // 0.001 MON per 10 HP lost, minimum 0.0001 MON
+        const monAmount = Math.max(0.0001, (damageTaken / 10) * 0.001);
+        const amountWei = BigInt(Math.round(monAmount * 1e18));
+
+        // For sell, we need token balance. Use a fixed sell amount proportional to damage.
+        // The NadFunClient.sellToken takes token amount (not MON amount).
+        // We'll attempt to sell proportional tokens. If balance is insufficient, it fails gracefully.
+        client.sellToken(tokenAddress, amountWei).then((txHash) => {
+          console.log(
+            `[TokenTrade] ${agentInfo.name} panic-sold $HNADS (${monAmount.toFixed(4)} tokens): ${txHash}`,
+          );
+          broadcastEvent(sockets, {
+            type: 'agent_token_trade',
+            data: {
+              agentId: combat.targetId,
+              agentName: agentInfo.name,
+              action: 'sell',
+              amount: monAmount.toFixed(4),
+              reason: `Combat damage (-${Math.round(damageTaken)} HP)`,
+              txHash,
+              epochNumber,
+            },
+          });
+        }).catch((err) => {
+          console.error(`[TokenTrade] Sell failed for ${agentInfo.name}:`, err);
+          broadcastEvent(sockets, {
+            type: 'agent_token_trade',
+            data: {
+              agentId: combat.targetId,
+              agentName: agentInfo.name,
+              action: 'sell',
+              amount: monAmount.toFixed(4),
+              reason: `Combat damage (-${Math.round(damageTaken)} HP)`,
+              txHash: '',
+              epochNumber,
+            },
+          });
+        });
+      }
+    }
+  }
+
+  /**
    * Broadcast an odds_update event to all connected spectators.
    * Call after epoch processing once new odds have been computed.
    */
@@ -812,6 +966,147 @@ export class ArenaDO implements DurableObject {
       type: 'odds_update',
       data: { odds },
     });
+  }
+
+  /**
+   * Generate LLM-driven lessons for all agents in a completed battle.
+   *
+   * For each agent (alive or dead), sends a battle summary to the LLM
+   * and extracts 2-3 short, specific lessons. Lessons are stored in D1
+   * via AgentMemory.storeLessons() so they appear on the agent profile page.
+   *
+   * Non-blocking: failures are logged but never crash the battle flow.
+   * Called fire-and-forget from the battle completion handler.
+   */
+  private async generateAgentLessons(battleState: BattleState): Promise<void> {
+    const llmKeys: LLMKeys = {
+      groqApiKey: this.env.GROQ_API_KEY,
+      googleApiKey: this.env.GOOGLE_API_KEY,
+      openrouterApiKey: this.env.OPENROUTER_API_KEY,
+    };
+    const hasKeys = !!(llmKeys.groqApiKey || llmKeys.googleApiKey || llmKeys.openrouterApiKey);
+    if (!hasKeys) {
+      console.log(`[ArenaDO] No LLM keys — skipping lesson generation for battle ${battleState.battleId}`);
+      return;
+    }
+
+    const memory = new AgentMemory(this.env.DB);
+    const llm = getLLM(llmKeys);
+    const agents = Object.values(battleState.agents);
+    const winnerId = battleState.winnerId;
+
+    // Build a compact battle summary shared across all agent prompts
+    const agentSummaryLines = agents.map((a) => {
+      const status = a.id === winnerId ? 'WINNER' : a.isAlive ? 'ALIVE' : 'DEAD';
+      return `- ${a.name} (${a.class}): ${a.hp} HP, ${a.kills} kills, ${a.epochsSurvived} epochs survived [${status}]`;
+    });
+    const battleSummary = [
+      `Battle ${battleState.battleId.slice(0, 8)}`,
+      `Total epochs: ${battleState.epoch}`,
+      `Phase progression: ${battleState.phaseConfig?.phases.map((p) => p.name).join(' -> ') ?? 'unknown'}`,
+      `Agents:`,
+      ...agentSummaryLines,
+    ].join('\n');
+
+    // Compute placement for each agent (1 = winner, dead agents sorted by epochs survived)
+    const sorted = [...agents].sort((a, b) => {
+      if (a.id === winnerId) return -1;
+      if (b.id === winnerId) return 1;
+      if (a.isAlive && !b.isAlive) return -1;
+      if (!a.isAlive && b.isAlive) return 1;
+      return b.epochsSurvived - a.epochsSurvived;
+    });
+    const placementMap = new Map<string, number>();
+    sorted.forEach((a, idx) => placementMap.set(a.id, idx + 1));
+
+    // Generate lessons for each agent in parallel (bounded to avoid rate limits)
+    const lessonPromises = agents.map(async (agent) => {
+      const placement = placementMap.get(agent.id) ?? agents.length;
+      const isWinner = agent.id === winnerId;
+
+      try {
+        const response = await llm.chat([
+          {
+            role: 'system',
+            content: `You are analyzing a gladiator battle in the HUNGERNADS arena. Generate exactly 2-3 short, specific lessons this agent learned from the battle. Each lesson should reference actual battle events and agent names. Respond with ONLY a JSON array of objects with fields: "context" (what happened), "outcome" (the result), "learning" (one sentence lesson), "applied" (how to apply next time).`,
+          },
+          {
+            role: 'user',
+            content: `AGENT: ${agent.name} (${agent.class})
+PLACEMENT: #${placement} of ${agents.length}
+HP: ${agent.hp}/1000
+KILLS: ${agent.kills}
+EPOCHS SURVIVED: ${agent.epochsSurvived}
+STATUS: ${isWinner ? 'WON THE BATTLE' : agent.isAlive ? 'Survived (timeout)' : 'ELIMINATED'}
+
+FULL BATTLE SUMMARY:
+${battleSummary}
+
+Generate 2-3 specific, actionable lessons for ${agent.name}.`,
+          },
+        ], { maxTokens: 400, temperature: 0.7 });
+
+        let jsonStr = response.content.trim();
+        if (jsonStr.startsWith('```')) {
+          jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+        }
+        const parsed = JSON.parse(jsonStr) as Array<{
+          context?: string;
+          outcome?: string;
+          learning: string;
+          applied?: string;
+        }>;
+
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const lessons = parsed.slice(0, 3).map((l) => ({
+            battleId: battleState.battleId,
+            epoch: battleState.epoch,
+            context: l.context || `Placed #${placement} in battle (${battleState.epoch} epochs).`,
+            outcome: l.outcome || (isWinner ? 'Won the battle' : 'Eliminated'),
+            learning: l.learning || 'No lesson extracted.',
+            applied: l.applied || '',
+          }));
+
+          await memory.storeLessons(agent.id, battleState.battleId, lessons);
+          console.log(
+            `[ArenaDO] Generated ${lessons.length} lesson(s) for ${agent.name} in battle ${battleState.battleId.slice(0, 8)}`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[ArenaDO] Lesson generation failed for ${agent.name} in battle ${battleState.battleId.slice(0, 8)}:`,
+          err,
+        );
+        // Fallback: store a basic lesson so the agent always has something
+        try {
+          const fallbackLesson = {
+            battleId: battleState.battleId,
+            epoch: battleState.epoch,
+            context: `Battle lasted ${battleState.epoch} epochs. Placed #${placement}.`,
+            outcome: isWinner
+              ? 'Won the battle'
+              : agent.isAlive
+                ? 'Survived but did not win'
+                : 'Eliminated',
+            learning: isWinner
+              ? `Won after ${battleState.epoch} epochs with ${agent.kills} kill(s) as a ${agent.class}.`
+              : `Placed #${placement} as a ${agent.class} — survived ${agent.epochsSurvived} epochs.`,
+            applied: '',
+          };
+          await memory.storeLessons(agent.id, battleState.battleId, [fallbackLesson]);
+        } catch (fallbackErr) {
+          console.error(
+            `[ArenaDO] Even fallback lesson storage failed for ${agent.name}:`,
+            fallbackErr,
+          );
+        }
+      }
+    });
+
+    await Promise.allSettled(lessonPromises);
+    console.log(
+      `[ArenaDO] Lesson generation complete for battle ${battleState.battleId.slice(0, 8)} (${agents.length} agents)`,
+    );
   }
 
   /**

@@ -23,6 +23,7 @@ import {
   type EpochEndEvent,
   type EpochStartEvent,
   type BattleEndEvent,
+  type BattleStartingEvent,
   type GridStateEvent,
   type AgentMovedEvent,
   type PhaseChangeEvent,
@@ -109,6 +110,8 @@ export interface UseBattleStreamResult {
   phaseState: StreamPhaseState | null;
   /** Storm tile coordinates from the most recent grid_state event. Empty during LOOT. */
   stormTiles: { q: number; r: number }[];
+  /** Agent wallet addresses from battle_starting event (agentId -> address). */
+  agentWallets: Record<string, string>;
 }
 
 // ─── Constants ───────────────────────────────────────────────────────
@@ -130,6 +133,7 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
   const [recentMoves, setRecentMoves] = useState<RecentMove[]>([]);
   const [phaseState, setPhaseState] = useState<StreamPhaseState | null>(null);
   const [stormTiles, setStormTiles] = useState<{ q: number; r: number }[]>([]);
+  const [agentWallets, setAgentWallets] = useState<Record<string, string>>({});
 
   const wsRef = useRef<BattleWebSocket | null>(null);
   /** Ref tracking latest epoch number for use inside event callback (avoids stale closure). */
@@ -215,6 +219,20 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
         break;
       }
 
+      case 'battle_starting': {
+        const e = event as BattleStartingEvent;
+        const wallets: Record<string, string> = {};
+        for (const agent of e.data.agents) {
+          if (agent.walletAddress) {
+            wallets[agent.id] = agent.walletAddress;
+          }
+        }
+        if (Object.keys(wallets).length > 0) {
+          setAgentWallets(wallets);
+        }
+        break;
+      }
+
       case 'phase_change': {
         const e = event as PhaseChangeEvent;
         setPhaseState({
@@ -269,6 +287,7 @@ export function useBattleStream(battleId: string): UseBattleStreamResult {
     recentMoves,
     phaseState,
     stormTiles,
+    agentWallets,
   };
 }
 

@@ -24,8 +24,9 @@ import {
   curveEventToBattleEvent,
   gridStateToEvent,
 } from '../api/websocket';
-import { createNadFunClient, type NadFunClient, type CurveStream } from '../chain/nadfun';
-import type { Address } from 'viem';
+import { createNadFunClient, NadFunClient, type CurveStream } from '../chain/nadfun';
+import { type Address, createWalletClient, http, parseEther } from 'viem';
+import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { ArenaManager, computePhaseConfig, type PhaseConfig } from '../arena/arena';
 import { processEpoch as runEpoch, type EpochResult } from '../arena/epoch';
 import type { BattlePhase } from '../arena/types/status';
@@ -42,7 +43,7 @@ import { BettingPool, DEFAULT_BETTING_LOCK_AFTER_EPOCH } from '../betting/pool';
 import type { BettingPhase } from '../betting/pool';
 import { SponsorshipManager } from '../betting/sponsorship';
 import { updateBattle } from '../db/schema';
-import { createChainClient, type AgentResult as ChainAgentResult } from '../chain/client';
+import { createChainClient, monadTestnet, type AgentResult as ChainAgentResult } from '../chain/client';
 import { createMoltbookPoster } from '../moltbook';
 import { RatingManager, extractBattlePerformances } from '../ranking';
 import { AgentMemory } from '../learning/memory';
@@ -68,6 +69,10 @@ export interface BattleAgent {
   thoughts: string[];
   /** Agent's hex position on the grid (null if not yet placed). */
   position: { q: number; r: number } | null;
+  /** Ephemeral private key for on-chain token trades (0x-prefixed hex). */
+  privateKey?: string;
+  /** Derived wallet address for on-chain trades (cached from privateKey). */
+  walletAddress?: string;
 }
 
 /** Per-battle configuration passed from POST /battle/create. */
@@ -333,6 +338,7 @@ export class ArenaDO implements DurableObject {
       const agentId = agentIds[i];
       const agentClass = (agentClasses?.[i] ?? 'WARRIOR') as AgentClass;
       const agentName = agentNames?.[i] ?? `${agentClass}-${agentId.slice(0, 6)}`;
+      const pk = generatePrivateKey();
       agents[agentId] = {
         id: agentId,
         name: agentName,
@@ -344,6 +350,8 @@ export class ArenaDO implements DurableObject {
         epochsSurvived: 0,
         thoughts: [],
         position: null,
+        privateKey: pk,
+        walletAddress: privateKeyToAccount(pk).address,
       };
     }
 
@@ -427,6 +435,9 @@ export class ArenaDO implements DurableObject {
 
     // Start streaming $HNADS curve events to spectators
     this.startCurveStream();
+
+    // Fund agent wallets from oracle (fire-and-forget)
+    this.fundAgentWallets(battleState);
 
     return battleState;
   }
@@ -838,120 +849,123 @@ export class ArenaDO implements DurableObject {
   }
 
   /**
-   * Fire-and-forget agent token trades on nad.fun.
+   * Fund each agent's ephemeral wallet from the oracle account.
+   * Each agent receives 0.05 MON for on-chain token trades.
+   * Fire-and-forget: failures are logged but never block the battle.
+   */
+  private fundAgentWallets(battleState: BattleState): void {
+    if (!this.env.MONAD_RPC_URL || !this.env.PRIVATE_KEY) return;
+
+    const FUND_AMOUNT = parseEther('0.05');
+    const oracleAccount = privateKeyToAccount(this.env.PRIVATE_KEY as `0x${string}`);
+    const walletClient = createWalletClient({
+      account: oracleAccount,
+      chain: monadTestnet,
+      transport: http(this.env.MONAD_RPC_URL),
+    });
+
+    for (const agent of Object.values(battleState.agents)) {
+      if (!agent.walletAddress) continue;
+      walletClient.sendTransaction({
+        to: agent.walletAddress as Address,
+        value: FUND_AMOUNT,
+      }).then((tx) => {
+        console.log(`[Wallet] Funded ${agent.name} (${agent.walletAddress}): ${tx}`);
+      }).catch((err) => {
+        console.error(`[Wallet] Fund failed for ${agent.name} (${agent.walletAddress}):`, err);
+      });
+    }
+  }
+
+  /**
+   * Fire-and-forget agent token trades on nad.fun (buy-only, per-agent wallets).
    *
    * On prediction win (positive hpChange): agent auto-buys $HNADS ("victory purchase").
-   * On combat damage (negative hpChangeTarget): agent auto-sells $HNADS ("panic sell").
+   * On kill (combat death): attacker auto-buys $HNADS ("kill trophy").
    *
    * Amount: 0.001 MON per 10 HP gained/lost (proportional).
    * Non-blocking: tx failure is logged but never breaks the game loop.
    */
   private fireAgentTokenTrades(result: EpochResult, battleState: BattleState): void {
-    if (!this.nadFunClient) return;
+    if (!this.env.MONAD_RPC_URL) return;
 
     const tokenAddress = (this.env.NADFUN_TOKEN_ADDRESS ?? '0xe19fd60f5117Df0F23659c7bc16e2249b8dE7777') as Address;
-    const client = this.nadFunClient;
     const sockets = this.state.getWebSockets();
     const epochNumber = result.epochNumber;
 
-    // Build agent name lookup from battle state
-    const agentNames = new Map<string, { name: string; class: string }>();
-    for (const [id, agent] of Object.entries(battleState.agents)) {
-      agentNames.set(id, { name: agent.name, class: agent.class });
-    }
+    /** Create a per-agent NadFunClient (or null if agent has no wallet). */
+    const getAgentClient = (agentId: string): NadFunClient | null => {
+      const agent = battleState.agents[agentId];
+      if (!agent?.privateKey || !this.env.MONAD_RPC_URL) return null;
+      return new NadFunClient({
+        rpcUrl: this.env.MONAD_RPC_URL,
+        privateKey: agent.privateKey as `0x${string}`,
+        network: 'testnet',
+      });
+    };
 
-    // ── Collect buy triggers: prediction wins ──────────────────────
+    /** Fire a buy-and-broadcast for a given agent. */
+    const fireBuy = (agentId: string, agentName: string, monAmount: number, reason: string, walletAddr?: string) => {
+      const client = getAgentClient(agentId);
+      if (!client) return;
+      const amountWei = BigInt(Math.round(monAmount * 1e18));
+
+      client.buyToken(tokenAddress, amountWei).then((txHash) => {
+        console.log(
+          `[TokenTrade] ${agentName} victory-bought $HNADS for ${monAmount.toFixed(4)} MON (wallet: ${walletAddr ?? '?'}): ${txHash}`,
+        );
+        broadcastEvent(sockets, {
+          type: 'agent_token_trade',
+          data: {
+            agentId,
+            agentName,
+            action: 'buy',
+            amount: monAmount.toFixed(4),
+            reason,
+            txHash,
+            epochNumber,
+            agentWallet: walletAddr ?? '',
+          },
+        });
+      }).catch((err) => {
+        console.error(`[TokenTrade] Buy failed for ${agentName}:`, err);
+        broadcastEvent(sockets, {
+          type: 'agent_token_trade',
+          data: {
+            agentId,
+            agentName,
+            action: 'buy',
+            amount: monAmount.toFixed(4),
+            reason,
+            txHash: '',
+            epochNumber,
+            agentWallet: walletAddr ?? '',
+          },
+        });
+      });
+    };
+
+    // ── Buy triggers: prediction wins ──────────────────────────────
     for (const pred of result.predictionResults) {
       if (pred.hpChange > 0) {
-        const agentInfo = agentNames.get(pred.agentId);
-        if (!agentInfo) continue;
+        const agent = battleState.agents[pred.agentId];
+        if (!agent) continue;
 
         // 0.001 MON per 10 HP gained, minimum 0.0001 MON
         const monAmount = Math.max(0.0001, (pred.hpChange / 10) * 0.001);
-        const amountWei = BigInt(Math.round(monAmount * 1e18));
-
-        // Fire-and-forget: don't await
-        client.buyToken(tokenAddress, amountWei).then((txHash) => {
-          console.log(
-            `[TokenTrade] ${agentInfo.name} victory-bought $HNADS for ${monAmount.toFixed(4)} MON: ${txHash}`,
-          );
-          broadcastEvent(sockets, {
-            type: 'agent_token_trade',
-            data: {
-              agentId: pred.agentId,
-              agentName: agentInfo.name,
-              action: 'buy',
-              amount: monAmount.toFixed(4),
-              reason: `Prediction win (+${Math.round(pred.hpChange)} HP)`,
-              txHash,
-              epochNumber,
-            },
-          });
-        }).catch((err) => {
-          console.error(`[TokenTrade] Buy failed for ${agentInfo.name}:`, err);
-          // Still broadcast the event with empty txHash so spectators see the attempt
-          broadcastEvent(sockets, {
-            type: 'agent_token_trade',
-            data: {
-              agentId: pred.agentId,
-              agentName: agentInfo.name,
-              action: 'buy',
-              amount: monAmount.toFixed(4),
-              reason: `Prediction win (+${Math.round(pred.hpChange)} HP)`,
-              txHash: '',
-              epochNumber,
-            },
-          });
-        });
+        fireBuy(pred.agentId, agent.name, monAmount, `Prediction win (+${Math.round(pred.hpChange)} HP)`, agent.walletAddress);
       }
     }
 
-    // ── Collect sell triggers: combat damage taken ─────────────────
-    for (const combat of result.combatResults) {
-      // Target took damage (negative hpChangeTarget)
-      if (combat.hpChangeTarget < 0) {
-        const agentInfo = agentNames.get(combat.targetId);
-        if (!agentInfo) continue;
+    // ── Buy triggers: kills (killer buys as kill trophy) ───────────
+    for (const death of result.deaths) {
+      if (death.killerId) {
+        const attacker = battleState.agents[death.killerId];
+        if (!attacker) continue;
 
-        const damageTaken = Math.abs(combat.hpChangeTarget);
-        // 0.001 MON per 10 HP lost, minimum 0.0001 MON
-        const monAmount = Math.max(0.0001, (damageTaken / 10) * 0.001);
-        const amountWei = BigInt(Math.round(monAmount * 1e18));
-
-        // For sell, we need token balance. Use a fixed sell amount proportional to damage.
-        // The NadFunClient.sellToken takes token amount (not MON amount).
-        // We'll attempt to sell proportional tokens. If balance is insufficient, it fails gracefully.
-        client.sellToken(tokenAddress, amountWei).then((txHash) => {
-          console.log(
-            `[TokenTrade] ${agentInfo.name} panic-sold $HNADS (${monAmount.toFixed(4)} tokens): ${txHash}`,
-          );
-          broadcastEvent(sockets, {
-            type: 'agent_token_trade',
-            data: {
-              agentId: combat.targetId,
-              agentName: agentInfo.name,
-              action: 'sell',
-              amount: monAmount.toFixed(4),
-              reason: `Combat damage (-${Math.round(damageTaken)} HP)`,
-              txHash,
-              epochNumber,
-            },
-          });
-        }).catch((err) => {
-          console.error(`[TokenTrade] Sell failed for ${agentInfo.name}:`, err);
-          broadcastEvent(sockets, {
-            type: 'agent_token_trade',
-            data: {
-              agentId: combat.targetId,
-              agentName: agentInfo.name,
-              action: 'sell',
-              amount: monAmount.toFixed(4),
-              reason: `Combat damage (-${Math.round(damageTaken)} HP)`,
-              txHash: '',
-              epochNumber,
-            },
-          });
-        });
+        // 0.002 MON per kill (flat reward)
+        const monAmount = 0.002;
+        fireBuy(death.killerId, attacker.name, monAmount, `Kill trophy (REKT ${death.agentName})`, attacker.walletAddress);
       }
     }
   }
@@ -1320,9 +1334,10 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
 
     // ── Convert spawned agents to BattleAgent records with positions ──
     const agents: Record<string, BattleAgent> = {};
-    const agentPositionData: Array<{ id: string; name: string; class: string; position: { q: number; r: number } }> = [];
+    const agentPositionData: Array<{ id: string; name: string; class: string; position: { q: number; r: number }; walletAddress?: string }> = [];
 
     for (const agent of arena.getAllAgents()) {
+      const pk = generatePrivateKey();
       agents[agent.id] = {
         id: agent.id,
         name: agent.name,
@@ -1334,6 +1349,8 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
         epochsSurvived: agent.epochsSurvived,
         thoughts: [],
         position: agent.position,
+        privateKey: pk,
+        walletAddress: privateKeyToAccount(pk).address,
       };
 
       if (agent.position) {
@@ -1342,6 +1359,7 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
           name: agent.name,
           class: agent.agentClass,
           position: { q: agent.position.q, r: agent.position.r },
+          walletAddress: agents[agent.id].walletAddress,
         });
       }
     }
@@ -1425,6 +1443,9 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
 
     // Start streaming $HNADS curve events to spectators
     this.startCurveStream();
+
+    // Fund agent wallets from oracle (fire-and-forget)
+    this.fundAgentWallets(battleState);
   }
 
   // ─── HTTP + WebSocket Handler ─────────────────────────────────

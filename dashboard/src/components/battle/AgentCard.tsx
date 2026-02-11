@@ -198,6 +198,23 @@ export default function AgentCard({ agent, highlighted }: AgentCardProps) {
         )}
       </div>
 
+      {/* Agent wallet address */}
+      {agent.walletAddress && (
+        <div className="mb-2">
+          <a
+            href={`https://testnet.monadexplorer.com/address/${agent.walletAddress}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`text-[10px] font-mono transition-colors ${
+              isDead ? "text-gray-700" : "text-gray-500 hover:text-gold"
+            }`}
+            title={agent.walletAddress}
+          >
+            {agent.walletAddress.slice(0, 6)}...{agent.walletAddress.slice(-4)}
+          </a>
+        </div>
+      )}
+
       {/* HP Bar */}
       <div className={isDead ? "opacity-40" : ""}>
         <HPBar hp={agent.hp} maxHp={agent.maxHp} />

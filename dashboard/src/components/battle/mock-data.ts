@@ -9,6 +9,8 @@ export interface BattleAgent extends AgentState {
   attacked?: boolean;
   predictionResult?: "correct" | "wrong";
   isWinner?: boolean;
+  /** Ephemeral wallet address for on-chain token trades. */
+  walletAddress?: string;
 }
 
 /** Action feed entry */

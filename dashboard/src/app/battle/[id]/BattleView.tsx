@@ -408,7 +408,9 @@ function eventToFeedEntries(
       const meta = agentMeta.get(e.data.agentId);
       const agentName = meta?.name ?? e.data.agentName;
       const agentClass = meta?.class;
-      const verb = e.data.action === 'buy' ? 'bought' : 'panic-sold';
+      const walletTag = e.data.agentWallet
+        ? ` [${e.data.agentWallet.slice(0, 6)}...]`
+        : '';
       const txSuffix = e.data.txHash
         ? ` (tx: ${e.data.txHash.slice(0, 10)}...)`
         : ' (tx pending)';
@@ -421,7 +423,7 @@ function eventToFeedEntries(
           agentId: e.data.agentId,
           agentName,
           agentClass,
-          message: `${agentName} ${verb} $HNADS for ${e.data.amount} MON. ${e.data.reason}${txSuffix}`,
+          message: `${agentName}${walletTag} bought $HNADS for ${e.data.amount} MON. ${e.data.reason}${txSuffix}`,
         },
       ];
     }
@@ -611,6 +613,7 @@ export default function BattleView({ battleId }: BattleViewProps) {
     recentMoves,
     phaseState,
     stormTiles,
+    agentWallets,
   } = useBattleStream(battleId);
 
   const { address, isConnected: walletConnected } = useAccount();
@@ -767,9 +770,10 @@ export default function BattleView({ battleId }: BattleViewProps) {
             : "wrong"
           : undefined,
         isWinner: winner?.winnerId === state.id,
+        walletAddress: agentWallets[state.id],
       } satisfies BattleAgent;
     });
-  }, [agentStates, events, agentMeta, winner]);
+  }, [agentStates, events, agentMeta, winner, agentWallets]);
 
   // ─── Transform grid state → Map<agentId, HexCoord> + Map<hexKey, TileItem[]>
   // TileItem type from HexBattleArena: { id: string; type: ItemType }

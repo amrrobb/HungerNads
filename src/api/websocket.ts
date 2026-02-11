@@ -135,7 +135,7 @@ export interface TokenSellEvent {
   };
 }
 
-/** Agent-initiated token trade during a battle (victory buy / panic sell). */
+/** Agent-initiated token trade during a battle (buy-only, per-agent wallet). */
 export interface AgentTokenTradeEvent {
   type: 'agent_token_trade';
   data: {
@@ -144,11 +144,13 @@ export interface AgentTokenTradeEvent {
     action: 'buy' | 'sell';
     /** MON amount (human-readable string, e.g. "0.001") */
     amount: string;
-    /** Trigger reason: prediction win, combat damage, etc. */
+    /** Trigger reason: prediction win, kill trophy, etc. */
     reason: string;
     /** On-chain tx hash (empty string if tx failed) */
     txHash: string;
     epochNumber: number;
+    /** Agent's ephemeral wallet address that sent the transaction. */
+    agentWallet?: string;
   };
 }
 
@@ -387,6 +389,7 @@ export interface BattleStartingEvent {
       name: string;
       class: string;
       position: { q: number; r: number };
+      walletAddress?: string;
     }>;
     startsAt: number;
   };

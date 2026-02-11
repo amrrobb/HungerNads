@@ -1,9 +1,13 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { useAccount, useSendTransaction, useWaitForTransactionReceipt } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
+import { parseEther } from "viem";
 import type { AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
 import AgentPortrait from "@/components/battle/AgentPortrait";
+import { ARENA_ADDRESS, monadTestnet } from "@/lib/wallet";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,22 +54,39 @@ export default function JoinForm({
   const [agentName, setAgentName] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
-  const [walletAddress, setWalletAddress] = useState("");
-  const [txHash, setTxHash] = useState("");
   const [error, setError] = useState("");
   const [isPending, setIsPending] = useState(false);
 
   const hasFee = parseFloat(feeAmount) > 0;
 
+  // ---- Wallet + on-chain payment ----
+  const { address: walletAddress, isConnected, chain } = useAccount();
+  const wrongChain = isConnected && chain?.id !== monadTestnet.id;
+  const {
+    sendTransaction,
+    data: paymentHash,
+    isPending: isSendingTx,
+    error: txError,
+    reset: resetTx,
+  } = useSendTransaction();
+  const {
+    isFetching: isConfirmingTx,
+    isSuccess: txConfirmed,
+  } = useWaitForTransactionReceipt({
+    hash: paymentHash,
+    chainId: monadTestnet.id,
+  });
+
+  // Fee is "paid" once we have the tx hash — backend validates the actual receipt.
+  // We don't block on useWaitForTransactionReceipt because Monad RPC can be slow.
+  const feePaid = !hasFee || !!paymentHash;
+
   // ---- Derived state ----
   const nameIsValid = agentName.length > 0 && NAME_REGEX.test(agentName);
   const nameHasInvalidChars =
     agentName.length > 0 && !NAME_REGEX.test(agentName);
-  const walletIsValid = /^0x[0-9a-fA-F]{40}$/.test(walletAddress);
-  const txHashIsValid = /^0x[0-9a-fA-F]{64}$/.test(txHash);
-  const feeFieldsValid = !hasFee || (walletIsValid && txHashIsValid);
   const canSubmit =
-    !disabled && !isPending && selectedClass !== null && nameIsValid && feeFieldsValid;
+    !disabled && !isPending && selectedClass !== null && nameIsValid && feePaid;
 
   // ---- Handlers ----
   const handleNameChange = useCallback(
@@ -103,11 +124,11 @@ export default function JoinForm({
       if (imageUrl.trim()) {
         body.imageUrl = imageUrl.trim();
       }
-      if (hasFee && walletAddress.trim()) {
-        body.walletAddress = walletAddress.trim();
+      if (hasFee && walletAddress) {
+        body.walletAddress = walletAddress;
       }
-      if (hasFee && txHash.trim()) {
-        body.txHash = txHash.trim();
+      if (hasFee && paymentHash) {
+        body.txHash = paymentHash;
       }
 
       const res = await fetch(`${API_BASE}/battle/${battleId}/join`, {
@@ -289,82 +310,84 @@ export default function JoinForm({
 
       {/* ---- Entry Fee Section (only when fee > 0) ---- */}
       {hasFee && (
-        <div className="space-y-4 rounded-lg border border-gold/30 bg-gold/5 p-4">
+        <div className="space-y-3 rounded-lg border border-gold/30 bg-gold/5 p-4">
           <div className="flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wider text-gray-400">
-              Entry Fee Required
+              Entry Fee
             </span>
             <span className="text-sm font-bold text-gold">
               {feeAmount} MON
             </span>
           </div>
-          <p className="text-[11px] leading-relaxed text-gray-500">
-            Send {feeAmount} MON to the HungernadsArena contract, then paste your wallet address and transaction hash below.
-          </p>
 
-          {/* Wallet Address */}
-          <div>
-            <label
-              htmlFor="wallet-address"
-              className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400"
-            >
-              Wallet Address
-            </label>
-            <input
-              id="wallet-address"
-              type="text"
-              value={walletAddress}
-              onChange={(e) => {
-                setWalletAddress(e.target.value);
-                setError("");
-              }}
-              disabled={disabled}
-              placeholder="0x..."
-              autoComplete="off"
-              className={`w-full rounded-lg border-2 bg-colosseum-surface px-3 py-2.5 font-mono text-xs text-gray-100 placeholder-gray-600 outline-none transition-colors ${
-                walletAddress.length > 0 && !walletIsValid
-                  ? "border-blood focus:border-blood"
-                  : "border-colosseum-surface-light focus:border-gold/60"
-              } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
-            />
-            {walletAddress.length > 0 && !walletIsValid && (
-              <p className="mt-1 text-[11px] text-blood-light">
-                Must be a valid Ethereum address (0x + 40 hex chars)
-              </p>
-            )}
-          </div>
-
-          {/* Transaction Hash */}
-          <div>
-            <label
-              htmlFor="tx-hash"
-              className="mb-1.5 block text-xs font-bold uppercase tracking-wider text-gray-400"
-            >
-              Payment TX Hash
-            </label>
-            <input
-              id="tx-hash"
-              type="text"
-              value={txHash}
-              onChange={(e) => {
-                setTxHash(e.target.value);
-                setError("");
-              }}
-              disabled={disabled}
-              placeholder="0x..."
-              autoComplete="off"
-              className={`w-full rounded-lg border-2 bg-colosseum-surface px-3 py-2.5 font-mono text-xs text-gray-100 placeholder-gray-600 outline-none transition-colors ${
-                txHash.length > 0 && !txHashIsValid
-                  ? "border-blood focus:border-blood"
-                  : "border-colosseum-surface-light focus:border-gold/60"
-              } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
-            />
-            {txHash.length > 0 && !txHashIsValid && (
-              <p className="mt-1 text-[11px] text-blood-light">
-                Must be a valid transaction hash (0x + 64 hex chars)
-              </p>
-            )}
-          </div>
+          {!isConnected ? (
+            <ConnectButton.Custom>
+              {({ openConnectModal }) => (
+                <button
+                  type="button"
+                  onClick={openConnectModal}
+                  className="w-full rounded-lg border border-gold/50 bg-gold/10 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98]"
+                >
+                  Connect Wallet to Pay
+                </button>
+              )}
+            </ConnectButton.Custom>
+          ) : wrongChain ? (
+            <ConnectButton.Custom>
+              {({ openChainModal }) => (
+                <button
+                  type="button"
+                  onClick={openChainModal}
+                  className="w-full rounded-lg border border-blood/50 bg-blood/10 px-4 py-2.5 text-xs font-bold uppercase tracking-wider text-blood-light transition-all hover:bg-blood/20 active:scale-[0.98]"
+                >
+                  Switch to Monad Testnet
+                </button>
+              )}
+            </ConnectButton.Custom>
+          ) : paymentHash ? (
+            <div className="flex items-center gap-2 text-[11px] text-green-400">
+              <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+              </svg>
+              <span>
+                {txConfirmed ? "Confirmed" : "Sent"} — TX: {paymentHash.slice(0, 10)}...{paymentHash.slice(-6)}
+              </span>
+            </div>
+          ) : (
+            <>
+              <button
+                type="button"
+                disabled={disabled || isSendingTx || isConfirmingTx}
+                onClick={() => {
+                  setError("");
+                  resetTx();
+                  sendTransaction({
+                    chainId: monadTestnet.id,
+                    to: ARENA_ADDRESS,
+                    value: parseEther(feeAmount),
+                  });
+                }}
+                className={`w-full rounded-lg px-4 py-2.5 text-xs font-bold uppercase tracking-wider transition-all ${
+                  isSendingTx || isConfirmingTx
+                    ? "cursor-wait border border-gold/40 bg-gold/10 text-gold"
+                    : "border border-gold/50 bg-gold/10 text-gold hover:bg-gold/20 active:scale-[0.98]"
+                } ${disabled ? "cursor-not-allowed opacity-50" : ""}`}
+              >
+                {isSendingTx
+                  ? "Confirm in Wallet..."
+                  : isConfirmingTx
+                    ? "Confirming TX..."
+                    : `Pay ${feeAmount} MON`}
+              </button>
+              {txError && (
+                <p className="text-[11px] text-blood-light">
+                  {txError.message.includes("User rejected")
+                    ? "Transaction rejected"
+                    : "Payment failed. Try again."}
+                </p>
+              )}
+            </>
+          )}
         </div>
       )}
 
@@ -408,8 +431,8 @@ export default function JoinForm({
             </svg>
             Entering Arena...
           </span>
-        ) : hasFee ? (
-          `Pay ${feeAmount} MON & Enter`
+        ) : hasFee && !paymentHash ? (
+          "Pay Fee First"
         ) : (
           "Enter the Arena"
         )}

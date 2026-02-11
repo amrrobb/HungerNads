@@ -1,8 +1,8 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { useAccount, useConnect } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { useAccount } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import type { AgentClass } from "@/types";
 import { CLASS_CONFIG } from "@/components/battle/mock-data";
 import AgentPortrait from "@/components/battle/AgentPortrait";
@@ -44,7 +44,6 @@ export default function BetSlip({
   onSuccess,
 }: BetSlipProps) {
   const { address, isConnected } = useAccount();
-  const { connect, isPending: isConnecting } = useConnect();
 
   const [betAmount, setBetAmount] = useState("");
   const [error, setError] = useState("");
@@ -76,10 +75,6 @@ export default function BetSlip({
   }, [agent, parsedAmount]);
 
   function handlePlaceBet() {
-    if (!isConnected) {
-      connect({ connector: injected() });
-      return;
-    }
     if (!validate()) return;
     setShowConfirm(true);
   }
@@ -119,7 +114,7 @@ export default function BetSlip({
     }
   }
 
-  const isSubmitting = isPending || isConnecting;
+  const isSubmitting = isPending;
 
   // ── Empty state ──
   if (!agent) {
@@ -162,7 +157,7 @@ export default function BetSlip({
               setError("");
               setShowConfirm(false);
             }}
-            className="text-gray-600 transition-colors hover:text-white"
+            className="flex items-center justify-center min-w-[44px] min-h-[44px] -m-2 text-gray-600 transition-colors hover:text-white"
             aria-label="Remove selection"
           >
             <svg
@@ -202,7 +197,7 @@ export default function BetSlip({
                 setError("");
                 setShowConfirm(false);
               }}
-              className="w-full rounded border border-colosseum-surface-light bg-colosseum-bg px-3 py-2 pr-16 text-sm text-white outline-none focus:border-gold transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              className="w-full rounded border border-colosseum-surface-light bg-colosseum-bg px-3 min-h-[44px] py-2 pr-16 text-base text-white outline-none focus:border-gold transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
             />
             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold uppercase tracking-wider text-gray-600">
               $HNADS
@@ -220,7 +215,7 @@ export default function BetSlip({
                 setError("");
                 setShowConfirm(false);
               }}
-              className={`flex-1 rounded border py-2.5 text-[10px] font-bold uppercase tracking-wider transition-colors sm:py-1.5 ${
+              className={`flex-1 rounded border min-h-[44px] py-2.5 text-xs font-bold uppercase tracking-wider transition-colors sm:min-h-0 sm:py-1.5 sm:text-[10px] ${
                 betAmount === String(amt)
                   ? "border-gold bg-gold/20 text-gold"
                   : "border-colosseum-surface-light bg-colosseum-bg text-gray-500 hover:border-gray-600 hover:text-gray-400"
@@ -272,37 +267,38 @@ export default function BetSlip({
             <div className="flex gap-2">
               <button
                 onClick={() => setShowConfirm(false)}
-                className="flex-1 rounded border border-colosseum-surface-light py-3 text-xs font-bold uppercase tracking-wider text-gray-500 transition-colors hover:text-white sm:py-2"
+                className="flex-1 rounded border border-colosseum-surface-light min-h-[44px] py-3 text-xs font-bold uppercase tracking-wider text-gray-500 transition-colors hover:text-white sm:min-h-0 sm:py-2"
               >
                 Cancel
               </button>
               <button
                 onClick={confirmBet}
                 disabled={isSubmitting}
-                className="flex-1 rounded bg-green-600 py-3 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-green-700 active:scale-[0.98] disabled:opacity-60 sm:py-2"
+                className="flex-1 rounded bg-green-600 min-h-[44px] py-3 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-green-700 active:scale-[0.98] disabled:opacity-60 sm:min-h-0 sm:py-2"
               >
                 {isSubmitting ? "Placing..." : "Confirm"}
               </button>
             </div>
           </div>
-        ) : (
+        ) : isConnected ? (
           <button
             onClick={handlePlaceBet}
             disabled={isSubmitting}
-            className={`w-full rounded py-3.5 text-xs font-bold uppercase tracking-wider transition-all sm:py-2.5 ${
-              isConnected
-                ? "bg-green-600 text-white hover:bg-green-700 active:scale-[0.98] disabled:opacity-60"
-                : "bg-gold/20 text-gold hover:bg-gold/30"
-            }`}
+            className="w-full rounded bg-green-600 min-h-[44px] py-3.5 text-xs font-bold uppercase tracking-wider text-white transition-all hover:bg-green-700 active:scale-[0.98] disabled:opacity-60 sm:min-h-0 sm:py-2.5"
           >
-            {isSubmitting
-              ? isConnecting
-                ? "Connecting..."
-                : "Placing..."
-              : isConnected
-                ? "Place Bet"
-                : "Connect Wallet"}
+            {isSubmitting ? "Placing..." : "Place Bet"}
           </button>
+        ) : (
+          <ConnectButton.Custom>
+            {({ openConnectModal }) => (
+              <button
+                onClick={openConnectModal}
+                className="w-full rounded bg-gold/20 min-h-[44px] py-3.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/30 sm:min-h-0 sm:py-2.5"
+              >
+                Connect Wallet
+              </button>
+            )}
+          </ConnectButton.Custom>
         )}
       </div>
     </div>

@@ -8,16 +8,18 @@
  *   Import `wagmiConfig` and wrap the app with WagmiProvider + QueryClientProvider.
  */
 
-import { http, createConfig } from 'wagmi';
-import { injected } from 'wagmi/connectors';
+import { http } from 'wagmi';
 import { defineChain } from 'viem';
+import { getDefaultConfig, type Chain } from '@rainbow-me/rainbowkit';
 import { QueryClient } from '@tanstack/react-query';
 
 // ─── Monad Testnet Chain ────────────────────────────────────────────
 
-export const monadTestnet = defineChain({
+export const monadTestnet = {
   id: 10143,
   name: 'Monad Testnet',
+  iconUrl: '/monad-icon.png',
+  iconBackground: '#836EF9',
   nativeCurrency: {
     name: 'Monad',
     symbol: 'MON',
@@ -35,15 +37,16 @@ export const monadTestnet = defineChain({
     },
   },
   testnet: true,
-});
+} as const satisfies Chain;
 
-// ─── Wagmi Config ───────────────────────────────────────────────────
+// ─── Wagmi + RainbowKit Config ──────────────────────────────────────
 
-export const wagmiConfig = createConfig({
+export const wagmiConfig = getDefaultConfig({
+  appName: 'HUNGERNADS',
+  // WalletConnect projectId — get one free at https://cloud.walletconnect.com
+  // Injected wallets (MetaMask) work without it; WalletConnect QR requires it.
+  projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID ?? 'hungernads-dev',
   chains: [monadTestnet],
-  connectors: [
-    injected(),
-  ],
   transports: {
     [monadTestnet.id]: http('https://testnet-rpc.monad.xyz'),
   },
@@ -54,7 +57,7 @@ export const wagmiConfig = createConfig({
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      staleTime: 10_000, // 10 seconds for on-chain data
+      staleTime: 10_000,
       retry: 2,
     },
   },

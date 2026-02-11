@@ -13,8 +13,8 @@
  */
 
 import { useEffect } from "react";
-import { useAccount, useConnect } from "wagmi";
-import { injected } from "wagmi/connectors";
+import { useAccount } from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { formatEther } from "viem";
 import {
   useBattlePool,
@@ -129,7 +129,6 @@ function FinalStandings({ agents, winnerId }: { agents: BattleAgent[]; winnerId:
 
 export default function PrizeClaim({ battleId, winner, agents }: PrizeClaimProps) {
   const { address, isConnected } = useAccount();
-  const { connect, isPending: isConnecting } = useConnect();
 
   // On-chain reads
   const { data: totalPoolRaw } = useBattlePool(battleId);
@@ -306,13 +305,16 @@ export default function PrizeClaim({ battleId, winner, agents }: PrizeClaimProps
           <div className="text-xs text-gray-500">
             Connect wallet to check your prizes
           </div>
-          <button
-            onClick={() => connect({ connector: injected() })}
-            disabled={isConnecting}
-            className="mt-2 rounded border border-gold/30 bg-gold/10 px-6 py-2 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98] disabled:opacity-60"
-          >
-            {isConnecting ? "Connecting..." : "Connect Wallet"}
-          </button>
+          <ConnectButton.Custom>
+            {({ openConnectModal }) => (
+              <button
+                onClick={openConnectModal}
+                className="mt-2 rounded border border-gold/30 bg-gold/10 px-6 py-2 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98]"
+              >
+                Connect Wallet
+              </button>
+            )}
+          </ConnectButton.Custom>
         </div>
       )}
 

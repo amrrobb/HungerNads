@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Cinzel } from "next/font/google";
+import "@rainbow-me/rainbowkit/styles.css";
 import "./globals.css";
 import Providers from "@/components/Providers";
 import LayoutShell from "@/components/nav/LayoutShell";

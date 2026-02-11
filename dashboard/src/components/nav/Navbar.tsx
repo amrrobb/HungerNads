@@ -17,6 +17,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useAccount, useDisconnect } from 'wagmi';
+import { ConnectButton } from '@rainbow-me/rainbowkit';
 import {
   Swords,
   Coins,
@@ -26,10 +27,12 @@ import {
   LogOut,
   History,
   Trophy,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import TokenInfo from '@/components/TokenInfo';
-import WalletConnect from '@/components/WalletConnect';
 import BurnCounterBadge from '@/components/nav/BurnCounterBadge';
+import { useSoundEffects } from '@/hooks/useSoundEffects';
 
 // ---------------------------------------------------------------------------
 // Tab definitions
@@ -174,6 +177,32 @@ function ProfileMenu({ address }: { address: string }) {
 }
 
 // ---------------------------------------------------------------------------
+// Sound Toggle
+// ---------------------------------------------------------------------------
+
+function SoundToggle({
+  isMuted,
+  toggleMute,
+}: {
+  isMuted: boolean;
+  toggleMute: () => void;
+}) {
+  return (
+    <button
+      onClick={toggleMute}
+      className={`relative rounded-lg p-2 transition-colors ${
+        isMuted
+          ? 'text-gray-500 hover:bg-colosseum-surface hover:text-gray-300'
+          : 'text-gold hover:bg-gold/10'
+      }`}
+      title={isMuted ? 'Unmute sound effects' : 'Mute sound effects'}
+    >
+      {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Notification Bell
 // ---------------------------------------------------------------------------
 
@@ -202,6 +231,7 @@ export default function Navbar() {
   const pathname = usePathname();
   const [mounted, setMounted] = useState(false);
   const { address, isConnected } = useAccount();
+  const { isMuted, toggleMute } = useSoundEffects();
 
   useEffect(() => setMounted(true), []);
 
@@ -264,6 +294,8 @@ export default function Navbar() {
         <div className="flex items-center gap-2">
           <BurnCounterBadge />
 
+          <SoundToggle isMuted={isMuted} toggleMute={toggleMute} />
+
           <NotificationBell />
 
           <div className="hidden border-l border-colosseum-surface-light pl-3 lg:block">
@@ -274,7 +306,16 @@ export default function Navbar() {
             {mounted && isConnected && address ? (
               <ProfileMenu address={address} />
             ) : (
-              <WalletConnect />
+              <ConnectButton.Custom>
+                {({ openConnectModal }) => (
+                  <button
+                    onClick={openConnectModal}
+                    className="rounded border border-gold/30 bg-gold/10 px-4 py-1.5 text-xs font-bold uppercase tracking-wider text-gold transition-all hover:bg-gold/20 active:scale-[0.98]"
+                  >
+                    Connect Wallet
+                  </button>
+                )}
+              </ConnectButton.Custom>
             )}
           </div>
         </div>

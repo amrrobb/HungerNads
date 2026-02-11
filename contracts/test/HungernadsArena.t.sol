@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {HungernadsArena} from "../src/HungernadsArena.sol";
 
 contract HungernadsArenaTest is Test {
@@ -21,7 +22,12 @@ contract HungernadsArenaTest is Test {
     // -----------------------------------------------------------------------
 
     function setUp() public {
-        arena = new HungernadsArena(oracle);
+        HungernadsArena impl = new HungernadsArena();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(impl),
+            abi.encodeCall(HungernadsArena.initialize, (oracle))
+        );
+        arena = HungernadsArena(address(proxy));
 
         agentIds = new uint256[](5);
         agentIds[0] = 1; // Warrior
@@ -32,23 +38,32 @@ contract HungernadsArenaTest is Test {
     }
 
     // -----------------------------------------------------------------------
-    // Constructor
+    // Initialization
     // -----------------------------------------------------------------------
 
-    function test_constructor_setsOracleAndOwner() public view {
+    function test_initialize_setsOracleAndOwner() public view {
         assertEq(arena.oracle(), oracle);
         assertEq(arena.owner(), owner);
     }
 
-    function test_constructor_revertsOnZeroOracle() public {
+    function test_initialize_revertsOnZeroOracle() public {
+        HungernadsArena impl2 = new HungernadsArena();
         vm.expectRevert(HungernadsArena.ZeroAddress.selector);
-        new HungernadsArena(address(0));
+        new ERC1967Proxy(
+            address(impl2),
+            abi.encodeCall(HungernadsArena.initialize, (address(0)))
+        );
     }
 
-    function test_constructor_emitsOracleUpdated() public {
-        vm.expectEmit(true, true, false, false);
-        emit HungernadsArena.OracleUpdated(address(0), oracle);
-        new HungernadsArena(oracle);
+    function test_initialize_twice_reverts() public {
+        vm.expectRevert();
+        arena.initialize(oracle);
+    }
+
+    function test_implCannotBeInitialized() public {
+        HungernadsArena impl2 = new HungernadsArena();
+        vm.expectRevert();
+        impl2.initialize(oracle);
     }
 
     // -----------------------------------------------------------------------
@@ -85,7 +100,7 @@ contract HungernadsArenaTest is Test {
 
     function test_registerBattle_createsNewBattle() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         HungernadsArena.Battle memory b = arena.getBattle(battleId1);
         assertEq(b.battleId, battleId1);
@@ -98,7 +113,7 @@ contract HungernadsArenaTest is Test {
 
     function test_registerBattle_autoRegistersAgents() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         for (uint256 i = 0; i < agentIds.length; i++) {
             HungernadsArena.AgentStats memory s = arena.getAgentStats(agentIds[i]);
@@ -108,11 +123,11 @@ contract HungernadsArenaTest is Test {
 
     function test_registerBattle_incrementsBattleCount() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
         assertEq(arena.getBattleCount(), 1);
 
         vm.prank(oracle);
-        arena.registerBattle(battleId2, agentIds);
+        arena.registerBattle(battleId2, agentIds, 0);
         assertEq(arena.getBattleCount(), 2);
     }
 
@@ -120,7 +135,7 @@ contract HungernadsArenaTest is Test {
         vm.prank(oracle);
         vm.expectEmit(true, false, false, true);
         emit HungernadsArena.BattleCreated(battleId1, agentIds);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
     }
 
     function test_registerBattle_emitsAgentRegistered() public {
@@ -130,17 +145,17 @@ contract HungernadsArenaTest is Test {
             vm.expectEmit(true, false, false, false);
             emit HungernadsArena.AgentRegistered(agentIds[i]);
         }
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
     }
 
     function test_registerBattle_doesNotReRegisterKnownAgents() public {
         vm.startPrank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         // Second battle with same agents should NOT emit AgentRegistered
         // (no easy way to assert "event not emitted" in Foundry, so just
         // verify the call succeeds without reverting)
-        arena.registerBattle(battleId2, agentIds);
+        arena.registerBattle(battleId2, agentIds, 0);
         vm.stopPrank();
 
         // Stats should still show exists
@@ -151,15 +166,15 @@ contract HungernadsArenaTest is Test {
     function test_registerBattle_revertsForNonOracle() public {
         vm.prank(rando);
         vm.expectRevert(HungernadsArena.OnlyOracle.selector);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
     }
 
     function test_registerBattle_revertsDuplicate() public {
         vm.startPrank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         vm.expectRevert(abi.encodeWithSelector(HungernadsArena.BattleAlreadyExists.selector, battleId1));
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
         vm.stopPrank();
     }
 
@@ -169,7 +184,7 @@ contract HungernadsArenaTest is Test {
 
         vm.prank(oracle);
         vm.expectRevert(HungernadsArena.InvalidAgentCount.selector);
-        arena.registerBattle(battleId1, tooFew);
+        arena.registerBattle(battleId1, tooFew, 0);
     }
 
     // -----------------------------------------------------------------------
@@ -178,7 +193,7 @@ contract HungernadsArenaTest is Test {
 
     function test_activateBattle_transitionsToActive() public {
         vm.startPrank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
         arena.activateBattle(battleId1);
         vm.stopPrank();
 
@@ -188,7 +203,7 @@ contract HungernadsArenaTest is Test {
 
     function test_activateBattle_emitsEvent() public {
         vm.startPrank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         vm.expectEmit(true, false, false, false);
         emit HungernadsArena.BattleActivated(battleId1);
@@ -198,7 +213,7 @@ contract HungernadsArenaTest is Test {
 
     function test_activateBattle_revertsIfNotCreated() public {
         vm.startPrank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
         arena.activateBattle(battleId1);
 
         // Try to activate again (already Active)
@@ -222,7 +237,7 @@ contract HungernadsArenaTest is Test {
 
     function test_activateBattle_revertsForNonOracle() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         vm.prank(rando);
         vm.expectRevert(HungernadsArena.OnlyOracle.selector);
@@ -235,7 +250,7 @@ contract HungernadsArenaTest is Test {
 
     function _registerAndActivate(bytes32 _bid) internal {
         vm.startPrank(oracle);
-        arena.registerBattle(_bid, agentIds);
+        arena.registerBattle(_bid, agentIds, 0);
         arena.activateBattle(_bid);
         vm.stopPrank();
     }
@@ -379,7 +394,7 @@ contract HungernadsArenaTest is Test {
 
     function test_recordResult_revertsIfNotActive() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
         // Still in Created state, not Active
 
         HungernadsArena.AgentResult[] memory results = _buildResults(1);
@@ -430,7 +445,7 @@ contract HungernadsArenaTest is Test {
 
     function test_getBattleAgents_returnsAgentIds() public {
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         uint256[] memory ids = arena.getBattleAgents(battleId1);
         assertEq(ids.length, 5);
@@ -442,7 +457,7 @@ contract HungernadsArenaTest is Test {
         vm.startPrank(oracle);
         for (uint256 i = 0; i < 10; i++) {
             bytes32 bid = keccak256(abi.encodePacked("battle-", i));
-            arena.registerBattle(bid, agentIds);
+            arena.registerBattle(bid, agentIds, 0);
         }
         vm.stopPrank();
 
@@ -480,7 +495,7 @@ contract HungernadsArenaTest is Test {
     function test_e2e_fullBattleLifecycle() public {
         // 1. Register
         vm.prank(oracle);
-        arena.registerBattle(battleId1, agentIds);
+        arena.registerBattle(battleId1, agentIds, 0);
 
         HungernadsArena.Battle memory b = arena.getBattle(battleId1);
         assertTrue(b.state == HungernadsArena.BattleState.Created);
@@ -512,4 +527,140 @@ contract HungernadsArenaTest is Test {
         assertEq(s1.wins, 0);
         assertEq(s1.losses, 1);
     }
+
+    // -----------------------------------------------------------------------
+    // Entry Fee System
+    // -----------------------------------------------------------------------
+
+    address player1 = makeAddr("player1");
+    address player2 = makeAddr("player2");
+
+    function _registerBattleWithFee(bytes32 _bid, uint256 fee) internal {
+        vm.prank(oracle);
+        arena.registerBattle(_bid, agentIds, fee);
+    }
+
+    function test_registerBattle_withFee() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        HungernadsArena.Battle memory b = arena.getBattle(battleId1);
+        assertEq(b.entryFee, 0.1 ether);
+    }
+
+    function test_payEntryFee_success() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+
+        vm.prank(player1);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+
+        assertTrue(arena.feePaid(battleId1, player1));
+        assertEq(arena.feesCollected(battleId1), 0.1 ether);
+    }
+
+    function test_payEntryFee_wrongAmount_reverts() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+
+        vm.prank(player1);
+        vm.expectRevert(HungernadsArena.IncorrectFeeAmount.selector);
+        arena.payEntryFee{value: 0.2 ether}(battleId1);
+    }
+
+    function test_payEntryFee_alreadyPaid_reverts() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+
+        vm.startPrank(player1);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+
+        vm.expectRevert(HungernadsArena.AlreadyPaid.selector);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+        vm.stopPrank();
+    }
+
+    function test_payEntryFee_freeBattle_reverts() public {
+        vm.prank(oracle);
+        arena.registerBattle(battleId1, agentIds, 0); // free battle
+        vm.deal(player1, 1 ether);
+
+        vm.prank(player1);
+        vm.expectRevert(HungernadsArena.NoFeeRequired.selector);
+        arena.payEntryFee{value: 0}(battleId1);
+    }
+
+    function test_payEntryFee_battleNotFound_reverts() public {
+        vm.deal(player1, 1 ether);
+        vm.prank(player1);
+        vm.expectRevert(abi.encodeWithSelector(HungernadsArena.BattleNotFound.selector, battleId1));
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+    }
+
+    function test_withdrawFees_success() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+        vm.deal(player2, 1 ether);
+
+        vm.prank(player1);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+        vm.prank(player2);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+
+        // Complete the battle
+        vm.startPrank(oracle);
+        arena.activateBattle(battleId1);
+        arena.recordResult(battleId1, 1, _buildResults(1));
+        vm.stopPrank();
+
+        uint256 ownerBalBefore = owner.balance;
+        arena.withdrawFees(battleId1); // called by owner (this contract)
+        assertEq(owner.balance - ownerBalBefore, 0.2 ether);
+        assertEq(arena.feesCollected(battleId1), 0);
+    }
+
+    function test_withdrawFees_notOwner_reverts() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+        vm.prank(player1);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+
+        // Complete battle
+        vm.startPrank(oracle);
+        arena.activateBattle(battleId1);
+        arena.recordResult(battleId1, 1, _buildResults(1));
+        vm.stopPrank();
+
+        vm.prank(rando);
+        vm.expectRevert();
+        arena.withdrawFees(battleId1);
+    }
+
+    function test_withdrawFees_battleNotCompleted_reverts() public {
+        _registerBattleWithFee(battleId1, 0.1 ether);
+        vm.deal(player1, 1 ether);
+        vm.prank(player1);
+        arena.payEntryFee{value: 0.1 ether}(battleId1);
+
+        // Battle is still in Created state
+        vm.expectRevert(HungernadsArena.BattleNotCompleted.selector);
+        arena.withdrawFees(battleId1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Upgrade Authorization
+    // -----------------------------------------------------------------------
+
+    function test_upgrade_onlyOwner() public {
+        HungernadsArena newImpl = new HungernadsArena();
+
+        // Non-owner can't upgrade
+        vm.prank(rando);
+        vm.expectRevert();
+        arena.upgradeToAndCall(address(newImpl), "");
+
+        // Owner can upgrade
+        arena.upgradeToAndCall(address(newImpl), "");
+    }
+
+    // Allow receiving ETH for withdrawFees test
+    receive() external payable {}
 }

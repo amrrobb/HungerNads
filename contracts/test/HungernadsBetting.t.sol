@@ -2,6 +2,7 @@
 pragma solidity ^0.8.24;
 
 import {Test, console2} from "forge-std/Test.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {HungernadsBetting} from "../src/HungernadsBetting.sol";
 
 contract HungernadsBettingTest is Test {
@@ -19,7 +20,12 @@ contract HungernadsBettingTest is Test {
     uint256 public constant AGENT_3 = 3;
 
     function setUp() public {
-        betting = new HungernadsBetting(oracle, treasury);
+        HungernadsBetting impl = new HungernadsBetting();
+        ERC1967Proxy proxy = new ERC1967Proxy(
+            address(impl),
+            abi.encodeCall(HungernadsBetting.initialize, (oracle, treasury))
+        );
+        betting = HungernadsBetting(address(proxy));
 
         // Fund test accounts
         vm.deal(alice, 100 ether);
@@ -596,6 +602,63 @@ contract HungernadsBettingTest is Test {
         uint256 total = betting.WINNERS_BPS() + betting.TREASURY_BPS() + betting.BURN_BPS()
             + betting.JACKPOT_BPS() + betting.TOP_BETTOR_BPS();
         assertEq(total, betting.BPS_DENOMINATOR());
+    }
+
+    // ──────────────────────────────────────────────
+    //  UUPS Upgrade + Admin
+    // ──────────────────────────────────────────────
+
+    function test_upgrade_onlyOwner() public {
+        HungernadsBetting newImpl = new HungernadsBetting();
+
+        address notOwner = makeAddr("notOwner");
+        vm.prank(notOwner);
+        vm.expectRevert();
+        betting.upgradeToAndCall(address(newImpl), "");
+
+        // Owner (this contract = msg.sender in setUp) can upgrade
+        betting.upgradeToAndCall(address(newImpl), "");
+    }
+
+    function test_initialize_twice_reverts() public {
+        vm.expectRevert();
+        betting.initialize(oracle, treasury);
+    }
+
+    function test_implCannotBeInitialized() public {
+        HungernadsBetting impl2 = new HungernadsBetting();
+        vm.expectRevert();
+        impl2.initialize(oracle, treasury);
+    }
+
+    function test_setOracle_onlyOwner() public {
+        address newOracle = makeAddr("newOracle");
+        betting.setOracle(newOracle);
+        assertEq(betting.oracle(), newOracle);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        betting.setOracle(makeAddr("bad"));
+    }
+
+    function test_setTreasury_onlyOwner() public {
+        address newTreasury = makeAddr("newTreasury");
+        betting.setTreasury(newTreasury);
+        assertEq(betting.treasury(), newTreasury);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        betting.setTreasury(makeAddr("bad"));
+    }
+
+    function test_setOracle_revertsOnZero() public {
+        vm.expectRevert(HungernadsBetting.ZeroAddress.selector);
+        betting.setOracle(address(0));
+    }
+
+    function test_setTreasury_revertsOnZero() public {
+        vm.expectRevert(HungernadsBetting.ZeroAddress.selector);
+        betting.setTreasury(address(0));
     }
 }
 

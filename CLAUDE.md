@@ -43,8 +43,12 @@ THE EMPEROR (Contract)   -> On-chain betting + sponsorship on Monad testnet
 
 ## Deployed Contracts (Monad Testnet, Chain 10143)
 
-- **HungernadsArena:** `0xc4CebF58836707611439e23996f4FA4165Ea6A28`
-- **HungernadsBetting:** `0x062b41F54F6Ce612E82bF0b7e8385a8f3A5D8d81`
+**UUPS Proxy Architecture** — these are permanent proxy addresses. Future upgrades use `upgradeTo()` on the proxy; addresses never change.
+
+- **HungernadsArena (Proxy):** `0x45B9151BD350F26eE0ad44395B5555cbA5364DC8`
+- **HungernadsBetting (Proxy):** `0xEfA79f90A2a9400A32De384b742d22524c4A69d5`
+- **Arena Implementation:** `0x6811b65C31325D0abC0B59aD9be0D8ADd8299dCF`
+- **Betting Implementation:** `0x36Cd512c939af6a9340bC826c70af947a7c86845`
 - **Oracle/Owner/Treasury:** `0x77C037fbF42e85dB1487B390b08f58C00f438812`
 - 65/65 Foundry tests pass
 

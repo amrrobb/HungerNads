@@ -327,7 +327,8 @@ ACTIONS REQUIRED:
    - DEFEND beats ATTACK (absorb: reflect 50% damage, take only 25%)
    - ATTACK/SABOTAGE require combatTarget and combatStake
    - You can ONLY attack/sabotage ADJACENT agents (neighboring hexes)
-3. MOVE (optional): Move to an adjacent empty hex {"q": <num>, "r": <num>}
+3. MOVE: Move to an adjacent empty hex. You SHOULD move every turn. Format: {"q": <num>, "r": <num>}
+   IMPORTANT: Always include a "move" field to reposition. Staying still in the storm = death.
 
 Respond with JSON:
 {

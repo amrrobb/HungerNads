@@ -331,6 +331,8 @@ export async function processEpoch(
 
   const { actionsMap: actions, secretaryReports } = await collectDecisions(activeAgents, arenaState, fallbackCtx);
 
+  console.log(`[Movement] Post-collectDecisions: ${actions.size} actions total, ${Array.from(actions.values()).filter(a => a.move).length} have moves`);
+
   // ── Step 2b: Record reasoning as agent thoughts (for spectator feed) ──
   for (const agent of activeAgents) {
     const agentActions = actions.get(agent.id);
@@ -365,7 +367,11 @@ export async function processEpoch(
   // Apply prediction HP changes to agents (with skill modifiers)
   for (const result of predictionResults) {
     const agent = arena.getAgent(result.agentId);
-    if (!agent || !agent.alive()) continue;
+    if (!agent || !agent.alive()) {
+      // Still set hpAfter for broadcasting (agent is dead or missing)
+      (result as { hpAfter: number }).hpAfter = agent?.hp ?? 0;
+      continue;
+    }
 
     let hpChange = result.hpChange;
 
@@ -393,6 +399,9 @@ export async function processEpoch(
     } else if (hpChange < 0) {
       agent.takeDamage(Math.abs(hpChange));
     }
+
+    // Set hpAfter for broadcasting to spectators
+    (result as { hpAfter: number }).hpAfter = agent.hp;
   }
 
   // ── Step 4: Resolve combat (skipped during LOOT phase) ──────────────
@@ -794,8 +803,11 @@ async function collectDecisions(
         rawActions = getDefaultActions(agent, fallbackCtx);
       }
 
-      // Run secretary validation
-      const secretaryCtx = buildSecretaryContext(agent);
+      // Run secretary validation (pass phase + grid for storm-aware move injection)
+      const secretaryCtx = buildSecretaryContext(agent, fallbackCtx
+        ? { phase: fallbackCtx.phase, grid: fallbackCtx.grid }
+        : undefined,
+      );
       const report = await validateAndCorrect(
         rawActions,
         secretaryCtx,
@@ -937,6 +949,7 @@ function processMovements(
   actions: Map<string, EpochActions>,
   arena: ArenaManager,
 ): MoveResult[] {
+  console.log(`[Movement] Processing ${actions.size} agent actions, ${Array.from(actions.values()).filter(a => a.move).length} have move field`);
   const results: MoveResult[] = [];
   const positions = arena.getAgentPositions();
 
@@ -959,6 +972,7 @@ function processMovements(
     const to = action.move;
     const toKey = `${to.q},${to.r}`;
 
+    console.log(`[Movement] ${agent.name} (${agentId}): from (${from.q},${from.r}) -> to (${to.q},${to.r})`);
     intendedMoves.set(agentId, { agentId, from, to });
     const existing = targetCounts.get(toKey) ?? [];
     existing.push(agentId);
@@ -979,6 +993,7 @@ function processMovements(
   for (const [agentId, move] of intendedMoves) {
     if (collisionAgents.has(agentId)) {
       // Collision: both agents stay put
+      console.log(`[Movement] ${agentId}: COLLISION at (${move.to.q},${move.to.r}) — staying put`);
       results.push({
         agentId,
         from: move.from,
@@ -990,6 +1005,7 @@ function processMovements(
     }
 
     const result = executeMove(agentId, move.to, positions);
+    console.log(`[Movement] ${agentId}: executeMove result — success=${result.success}${result.reason ? `, reason=${result.reason}` : ''}`);
     results.push(result);
 
     // Sync with hex grid and agent position

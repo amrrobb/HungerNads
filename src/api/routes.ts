@@ -20,6 +20,7 @@ import {
   updateBattle,
   getAgentWins,
   getAgentBattleCount,
+  getAgentsByBattle,
   checkFaucetEligibility,
   insertFaucetClaim,
   updateFaucetClaim,
@@ -1077,13 +1078,20 @@ app.get('/battle/:id/odds', async (c) => {
       }
     }
 
-    // If no epoch data yet, we can't compute meaningful odds based on HP.
-    // Return equal odds for all agents with bets.
+    // If no epoch data yet, fall back to bet data then to DB agents.
     if (Object.keys(agentHpMap).length === 0) {
-      // Fall back to agents from bet data — give each equal HP.
       const agentIds = Object.keys(perAgent);
-      for (const id of agentIds) {
-        agentHpMap[id] = { hp: 1000, maxHp: 1000, isAlive: true };
+      if (agentIds.length > 0) {
+        // Fall back to agents from bet data — give each equal HP.
+        for (const id of agentIds) {
+          agentHpMap[id] = { hp: 1000, maxHp: 1000, isAlive: true };
+        }
+      } else {
+        // No bets either — query all agents registered for this battle.
+        const battleAgents = await getAgentsByBattle(c.env.DB, battleId);
+        for (const agent of battleAgents) {
+          agentHpMap[agent.id] = { hp: 1000, maxHp: 1000, isAlive: true };
+        }
       }
     }
 

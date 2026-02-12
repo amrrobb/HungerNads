@@ -212,6 +212,14 @@ export async function getAllAgents(db: D1Database): Promise<AgentRow[]> {
   return result.results;
 }
 
+export async function getAgentsByBattle(db: D1Database, battleId: string): Promise<AgentRow[]> {
+  const result = await db
+    .prepare('SELECT * FROM agents WHERE battle_id = ?')
+    .bind(battleId)
+    .all<AgentRow>();
+  return result.results;
+}
+
 // ─── Battle Queries ──────────────────────────────────────────────
 
 export async function insertBattle(

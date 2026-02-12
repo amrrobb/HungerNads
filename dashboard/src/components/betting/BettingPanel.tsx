@@ -21,7 +21,7 @@ interface OddsResponse {
   battleId: string;
   totalPool: number;
   perAgent: Record<string, number>;
-  odds: Record<string, number>;
+  odds: Record<string, { probability: number; decimal: number }>;
 }
 
 /** GET /user/:address/bets response */
@@ -97,8 +97,10 @@ export default function BettingPanel({
   // ── Derive odds + track history ──
   const agentOdds = useMemo(() => {
     const apiOdds = oddsData?.odds ?? {};
+    // Dynamic fallback: equal odds = N alive agents (1/N probability)
+    const equalOddsMultiplier = aliveAgents.length > 0 ? aliveAgents.length : 5.0;
     return aliveAgents.map((agent) => {
-      const multiplier = apiOdds[agent.id] ?? 5.0;
+      const multiplier = apiOdds[agent.id]?.decimal ?? equalOddsMultiplier;
       return {
         ...agent,
         odds: multiplier,
@@ -111,13 +113,19 @@ export default function BettingPanel({
   useEffect(() => {
     if (!oddsData?.odds) return;
 
-    const currentOdds = oddsData.odds;
+    const rawOdds = oddsData.odds;
+
+    // Extract decimal multipliers into a flat map for tracking
+    const currentDecimalOdds: Record<string, number> = {};
+    for (const [agentId, entry] of Object.entries(rawOdds)) {
+      currentDecimalOdds[agentId] = entry.decimal;
+    }
 
     // Store previous odds before updating
-    previousOddsRef.current = { ...currentOdds };
+    previousOddsRef.current = { ...currentDecimalOdds };
 
     // Append to history (cap at 20 data points)
-    for (const [agentId, odds] of Object.entries(currentOdds)) {
+    for (const [agentId, odds] of Object.entries(currentDecimalOdds)) {
       if (!oddsHistoryRef.current[agentId]) {
         oddsHistoryRef.current[agentId] = [];
       }

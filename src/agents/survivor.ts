@@ -16,7 +16,8 @@
  * The LLM still provides reasoning and asset/direction picks.
  */
 
-import { BaseAgent, getDefaultActions } from './base-agent';
+import { BaseAgent, getDefaultActions, getFallbackMove } from './base-agent';
+import type { FallbackContext } from './base-agent';
 import { EpochActionsSchema } from './schemas';
 import type { ArenaState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
@@ -63,7 +64,7 @@ export class SurvivorAgent extends BaseAgent {
     };
   }
 
-  async decide(arenaState: ArenaState): Promise<EpochActions> {
+  async decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
@@ -101,13 +102,13 @@ export class SurvivorAgent extends BaseAgent {
 
       if (!parsed.success) {
         console.warn(`[SURVIVOR:${this.name}] Invalid after enforcement, using defaults`);
-        return this.getSurvivorDefaults(inSurvivalMode);
+        return this.getSurvivorDefaults(inSurvivalMode, fallbackCtx);
       }
 
       return parsed.data;
     } catch (error) {
       console.error(`[SURVIVOR:${this.name}] Decision failed:`, error);
-      return this.getSurvivorDefaults(inSurvivalMode);
+      return this.getSurvivorDefaults(inSurvivalMode, fallbackCtx);
     }
   }
 
@@ -194,6 +195,7 @@ export class SurvivorAgent extends BaseAgent {
         stake: clampedStake,
       },
       combatStance,
+      move: raw.move,
       useSkill: shouldUseSkill,
       // NEVER attack or sabotage — core class rule
       reasoning: `${modeTag}${baseReasoning}${overrideNote}`,
@@ -207,11 +209,12 @@ export class SurvivorAgent extends BaseAgent {
   /**
    * Fallback actions tuned for Survivor: minimum stake, always defend.
    */
-  private getSurvivorDefaults(inSurvivalMode: boolean): EpochActions {
+  private getSurvivorDefaults(inSurvivalMode: boolean, ctx?: FallbackContext): EpochActions {
     const assets = ['ETH', 'BTC', 'SOL', 'MON'] as const;
     const asset = assets[Math.floor(Math.random() * assets.length)];
     const direction = Math.random() > 0.5 ? 'UP' : 'DOWN';
     const modeTag = inSurvivalMode ? '[SURVIVAL MODE] ' : '';
+    const move = ctx ? (getFallbackMove(this, ctx) ?? undefined) : undefined;
 
     return {
       prediction: {
@@ -220,6 +223,7 @@ export class SurvivorAgent extends BaseAgent {
         stake: SURVIVOR_CONFIG.stakeMin,
       },
       combatStance: 'DEFEND',
+      move,
       reasoning: `${modeTag}[FALLBACK] ${this.name} defaulted to minimum stake + DEFEND.`,
     };
   }

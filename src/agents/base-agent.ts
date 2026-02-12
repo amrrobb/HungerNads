@@ -118,7 +118,7 @@ export abstract class BaseAgent {
    * Each agent class must implement its own decision logic.
    * Called once per epoch with the full arena state.
    */
-  abstract decide(arenaState: ArenaState): Promise<EpochActions>;
+  abstract decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions>;
 
   /**
    * Get the agent's personality prompt for LLM calls.

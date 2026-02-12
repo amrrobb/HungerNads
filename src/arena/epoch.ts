@@ -785,7 +785,7 @@ async function collectDecisions(
     agents.map(async (agent) => {
       let rawActions: EpochActions;
       try {
-        rawActions = await agent.decide(arenaState);
+        rawActions = await agent.decide(arenaState, fallbackCtx);
       } catch (err) {
         console.error(
           `[Epoch] Agent ${agent.name} (${agent.id}) decide() failed:`,

@@ -12,7 +12,7 @@
  * - Never ATTACKs (risky, inefficient, and gets punished by defenders)
  */
 
-import { BaseAgent, getDefaultActions } from './base-agent';
+import { BaseAgent, getDefaultActions, FallbackContext } from './base-agent';
 import { EpochActionsSchema } from './schemas';
 import type { ArenaState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
@@ -49,7 +49,7 @@ export class TraderAgent extends BaseAgent {
     };
   }
 
-  async decide(arenaState: ArenaState): Promise<EpochActions> {
+  async decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
@@ -131,6 +131,7 @@ export class TraderAgent extends BaseAgent {
           direction: result.prediction?.direction,
           stake: clampedStake,
         },
+        move: result.move,
         combatStance,
         combatTarget: (combatStance === 'SABOTAGE') ? combatTarget : undefined,
         combatStake: (combatStance === 'SABOTAGE') ? combatStake : undefined,
@@ -140,13 +141,13 @@ export class TraderAgent extends BaseAgent {
 
       if (!parsed.success) {
         console.warn(`[TRADER:${this.name}] Invalid LLM response, using defaults`);
-        return this._traderDefaults();
+        return this._traderDefaults(fallbackCtx);
       }
 
       return parsed.data;
     } catch (error) {
       console.error(`[TRADER:${this.name}] Decision failed:`, error);
-      return this._traderDefaults();
+      return this._traderDefaults(fallbackCtx);
     }
   }
 
@@ -158,8 +159,8 @@ export class TraderAgent extends BaseAgent {
    * Trader defaults are more conservative than the generic getDefaultActions.
    * Minimum stake, no attack/sabotage, defend based on HP level.
    */
-  private _traderDefaults(): EpochActions {
-    const base = getDefaultActions(this);
+  private _traderDefaults(ctx?: FallbackContext): EpochActions {
+    const base = getDefaultActions(this, ctx);
 
     // Override stake to Trader minimum
     base.prediction.stake = TRADER_STAKE_MIN;

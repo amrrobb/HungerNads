@@ -13,9 +13,11 @@
  * So we mix LLM flavor text with hard random mechanics.
  */
 
-import { BaseAgent, getDefaultActions } from './base-agent';
+import { BaseAgent, getDefaultActions, FallbackContext } from './base-agent';
 import { EpochActionsSchema } from './schemas';
 import type { ArenaState, Asset, Direction, EpochActions, CombatStance, SkillDefinition } from './schemas';
+import type { HexCoord } from '../arena/types/hex';
+import { getNeighbors, isStormTile, hexKey } from '../arena/hex-grid';
 import { PERSONALITIES } from './personalities';
 import { agentDecision } from '../llm';
 
@@ -91,13 +93,13 @@ export class GamblerAgent extends BaseAgent {
    * This means the LLM provides the entertaining reasoning/personality
    * while the actual numbers are chaos-driven.
    */
-  async decide(arenaState: ArenaState): Promise<EpochActions> {
+  async decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
 
     // Build chaotic actions programmatically
-    const chaosActions = this._buildChaosActions(others);
+    const chaosActions = this._buildChaosActions(others, fallbackCtx);
 
     // Try LLM for the reasoning/flavor only
     const skillContext = this.getSkillPromptContext();
@@ -129,6 +131,7 @@ export class GamblerAgent extends BaseAgent {
         combatStance: chaosActions.combatStance,
         combatTarget: chaosActions.combatTarget,
         combatStake: chaosActions.combatStake,
+        move: chaosActions.move ?? result?.move,
         reasoning: `[CHAOS] ${reasoning}`,
       };
 
@@ -159,6 +162,7 @@ export class GamblerAgent extends BaseAgent {
    */
   private _buildChaosActions(
     others: { name: string; class: string; hp: number }[],
+    ctx?: FallbackContext,
   ): EpochActions {
     // Random prediction
     const asset = pick(ASSETS);
@@ -168,9 +172,24 @@ export class GamblerAgent extends BaseAgent {
     // Gambler randomly activates ALL IN — 50% chance when available
     const shouldUseSkill = this.canUseSkill() && chance(0.5);
 
+    // Random adjacent move (chaos style)
+    let chaosMove: HexCoord | undefined;
+    if (ctx && this.position) {
+      const neighbors = getNeighbors(this.position, ctx.grid);
+      const safe = neighbors.filter(n => !isStormTile(n, ctx.phase));
+      const valid = safe.filter(n => {
+        const tile = ctx.grid.tiles.get(hexKey(n));
+        return !tile?.occupantId;
+      });
+      if (valid.length > 0) {
+        chaosMove = valid[Math.floor(Math.random() * valid.length)];
+      }
+    }
+
     const actions: EpochActions = {
       prediction: { asset, direction, stake },
       combatStance: 'NONE',
+      move: chaosMove,
       useSkill: shouldUseSkill,
       reasoning: this._chaosReasoning(asset, direction, stake),
     };

@@ -931,7 +931,7 @@ function resolveAttackTargets(
  * Dead agents and agents without a move action are skipped.
  * Collision handling: if two agents try to move to the same hex, both stay put.
  *
- * Also syncs movement with the 19-tile hex grid (arena.grid).
+ * Also syncs movement with the 37-tile hex grid (arena.grid).
  */
 function processMovements(
   actions: Map<string, EpochActions>,
@@ -997,7 +997,7 @@ function processMovements(
       const agent = arena.getAgent(agentId);
       if (agent) {
         agent.position = { q: move.to.q, r: move.to.r };
-        // Update the 19-tile hex grid
+        // Update the 37-tile hex grid
         arena.updateGrid(
           hexMoveAgent(agentId, move.from, move.to, arena.grid),
         );

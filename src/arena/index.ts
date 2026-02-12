@@ -54,7 +54,7 @@ export {
 } from './grid';
 export type { HexCoord, ArenaHex, MoveResult } from './grid';
 
-// 19-tile hex grid (expanded arena with tile types, pathfinding, items)
+// 37-tile hex grid (expanded arena with tile types, pathfinding, items)
 export {
   GRID_RADIUS,
   DIRECTION_OFFSETS,

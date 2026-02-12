@@ -36,6 +36,7 @@ import type { BaseAgent } from './base-agent';
 import { getDefaultActions } from './base-agent';
 import type { LLMKeys } from '../llm';
 import { getLLM } from '../llm/multi-provider';
+import { GRID_RADIUS, getDistance } from '../arena/hex-grid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -100,16 +101,10 @@ const VALID_STANCES: readonly CombatStance[] = ['ATTACK', 'SABOTAGE', 'DEFEND', 
 const STAKE_MIN = 5;
 const STAKE_MAX = 50;
 
-/** Arena hex bounds (7-hex grid: center + 6 surrounding) */
-const VALID_HEXES: readonly HexCoord[] = [
-  { q: 0, r: 0 },   // Center
-  { q: 1, r: 0 },   // E
-  { q: -1, r: 0 },  // W
-  { q: 0, r: -1 },  // NE
-  { q: 1, r: -1 },  // NW
-  { q: -1, r: 1 },  // SW
-  { q: 0, r: 1 },   // SE
-] as const;
+/** Check if a hex coordinate is within the arena grid (radius-based, no hardcoded list). */
+function isValidArenaHex(coord: HexCoord): boolean {
+  return getDistance(coord, { q: 0, r: 0 }) <= GRID_RADIUS;
+}
 
 // ---------------------------------------------------------------------------
 // Main Entry Point
@@ -669,12 +664,11 @@ function validateMovement(
     return;
   }
 
-  // Validate target hex is within arena bounds
-  const isValidHex = VALID_HEXES.some(h => h.q === move.q && h.r === move.r);
-  if (!isValidHex) {
+  // Validate target hex is within arena bounds (radius-3 grid = 37 tiles)
+  if (!isValidArenaHex({ q: move.q as number, r: move.r as number })) {
     issues.push({
       field: 'move',
-      message: `Target hex (${move.q}, ${move.r}) is outside the 7-hex arena; removed`,
+      message: `Target hex (${move.q}, ${move.r}) is outside the ${GRID_RADIUS}-radius arena; removed`,
       severity: 'WARNING',
       action: 'REMOVED',
       originalValue: move,

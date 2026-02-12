@@ -17,7 +17,8 @@
  * fights like a Warrior, even when the LLM drifts.
  */
 
-import { BaseAgent } from './base-agent';
+import { BaseAgent, getFallbackMove } from './base-agent';
+import type { FallbackContext } from './base-agent';
 import { EpochActionsSchema } from './schemas';
 import type { ArenaState, ArenaAgentState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
@@ -70,7 +71,7 @@ export class WarriorAgent extends BaseAgent {
   // Core decision loop
   // -------------------------------------------------------------------------
 
-  async decide(arenaState: ArenaState): Promise<EpochActions> {
+  async decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions> {
     const aliveOthers = arenaState.agents.filter(
       a => a.id !== this.id && a.isAlive,
     );
@@ -123,13 +124,13 @@ export class WarriorAgent extends BaseAgent {
         console.warn(
           `[WARRIOR:${this.name}] Schema validation failed after enforcement, using warrior defaults`,
         );
-        return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers);
+        return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers, fallbackCtx);
       }
 
       return parsed.data;
     } catch (error) {
       console.error(`[WARRIOR:${this.name}] Decision failed:`, error);
-      return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers);
+      return this.getWarriorDefaults(hpRatio, isDesperate, weakestTarget, aliveOthers, fallbackCtx);
     }
   }
 
@@ -289,6 +290,7 @@ export class WarriorAgent extends BaseAgent {
         direction: prediction?.direction ?? 'UP',
         stake,
       },
+      move: raw.move,
       combatStance,
       combatTarget,
       combatStake,
@@ -306,14 +308,17 @@ export class WarriorAgent extends BaseAgent {
     isDesperate: boolean,
     weakestTarget: ArenaAgentState | null,
     aliveOthers: ArenaAgentState[],
+    ctx?: FallbackContext,
   ): EpochActions {
     const assets = ['ETH', 'BTC', 'SOL', 'MON'] as const;
     const asset = assets[Math.floor(Math.random() * assets.length)];
     const direction = Math.random() > 0.5 ? 'UP' : 'DOWN';
     const stake = isDesperate ? 50 : Math.round(25 + Math.random() * 25);
+    const move = ctx ? (getFallbackMove(this, ctx) ?? undefined) : undefined;
 
     const actions: EpochActions = {
       prediction: { asset, direction, stake },
+      ...(move ? { move } : {}),
       combatStance: 'NONE',
       reasoning: isDesperate
         ? `[WARRIOR FALLBACK] ${this.name} is cornered. Going all-in. BLOOD AND GLORY.`

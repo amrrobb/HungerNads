@@ -88,7 +88,7 @@ export interface BattleConfig {
 }
 
 export const DEFAULT_BATTLE_CONFIG: BattleConfig = {
-  maxEpochs: 8, // Default for 5 agents (overridden by computePhaseConfig at battle start)
+  maxEpochs: 16, // Default for 5 agents (overridden by computePhaseConfig at battle start)
   bettingWindowEpochs: DEFAULT_BETTING_LOCK_AFTER_EPOCH,
   assets: ['ETH', 'BTC', 'SOL', 'MON'],
   feeAmount: '0',
@@ -156,7 +156,7 @@ const COUNTDOWN_DURATION_MS = 60_000;
 const DEFAULT_EPOCH_INTERVAL_MS = 300_000;
 
 // Safety cap: absolute maximum epochs before a battle is force-completed.
-// In practice, battles use computePhaseConfig(agentCount).totalEpochs (8–14),
+// In practice, battles use computePhaseConfig(agentCount).totalEpochs (16–28),
 // but this cap guards against runaway battles if phaseConfig is missing.
 const MAX_EPOCHS_SAFETY_CAP = 50;
 
@@ -600,7 +600,20 @@ export class ArenaDO implements DurableObject {
         .filter((a) => a.isAlive)
         .sort((a, b) => b.hp - a.hp);
 
-      const timeoutWinner = aliveAgents[0] ?? null;
+      let timeoutWinner = aliveAgents[0] ?? null;
+
+      // Defensive: if somehow all agents are dead at timeout, pick by kills
+      if (!timeoutWinner) {
+        const allAgents = Object.values(battleState.agents);
+        const maxKills = Math.max(...allAgents.map((a) => a.kills));
+        const killCandidates = allAgents.filter((a) => a.kills === maxKills);
+        timeoutWinner =
+          killCandidates[Math.floor(Math.random() * killCandidates.length)];
+        console.log(
+          `[ArenaDO] Timeout with 0 alive — fallback winner by kills: ${timeoutWinner.name} (${timeoutWinner.kills} kills, ${killCandidates.length} tied)`,
+        );
+      }
+
       const winnerId = timeoutWinner?.id ?? null;
 
       // Update battle state for persistence
@@ -1439,6 +1452,36 @@ Generate 2-3 specific, actionable lessons for ${agent.name}.`,
     } catch (err) {
       console.error(`[ArenaDO] Failed to update D1 battle row on transition:`, err);
       // Non-fatal: epoch processing will still work from DO storage
+    }
+
+    // ── On-chain registration (non-blocking) ──────────────────────
+    // Register the battle + create betting pool on the smart contracts.
+    // Mirrors logic from legacy /battle/start in routes.ts.
+    // Gracefully skipped if env vars are missing (dev mode).
+    const chainClient = createChainClient(this.env);
+    if (chainClient) {
+      const numericAgentIds = agentIds.map((_: string, i: number) => i + 1);
+      const chainWork = (async () => {
+        try {
+          await chainClient.registerBattle(battleState.battleId, numericAgentIds);
+          console.log(`[chain] Battle ${battleState.battleId} registered on-chain`);
+        } catch (err) {
+          console.error(`[chain] registerBattle failed for ${battleState.battleId}:`, err);
+        }
+        try {
+          await chainClient.createBettingPool(battleState.battleId);
+          console.log(`[chain] Betting pool created on-chain for ${battleState.battleId}`);
+        } catch (err) {
+          console.error(`[chain] createBettingPool failed for ${battleState.battleId}:`, err);
+        }
+        try {
+          await chainClient.activateBattle(battleState.battleId);
+          console.log(`[chain] Battle ${battleState.battleId} activated on-chain`);
+        } catch (err) {
+          console.error(`[chain] activateBattle failed for ${battleState.battleId}:`, err);
+        }
+      })();
+      this.state.waitUntil(chainWork);
     }
 
     // Start streaming $HNADS curve events to spectators

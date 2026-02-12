@@ -31,11 +31,21 @@ import type {
   Direction,
   HexCoord,
 } from './schemas';
-import { EpochActionsSchema } from './schemas';
+import { EpochActionsSchema, HexCoordSchema } from './schemas';
 import type { BaseAgent } from './base-agent';
 import { getDefaultActions } from './base-agent';
 import type { LLMKeys } from '../llm';
 import { getLLM } from '../llm/multi-provider';
+import {
+  GRID_RADIUS,
+  getDistance,
+  isStormTile,
+  getNeighbors,
+  closestTo,
+  hexKey,
+  createGrid,
+} from '../arena/hex-grid';
+import type { BattlePhase, HexGridState } from '../arena/hex-grid';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +98,10 @@ export interface SecretaryAgentContext {
   allyId: string | null;
   /** Agent's current hex position */
   position: HexCoord | null;
+  /** Current battle phase (for storm awareness). */
+  phase?: BattlePhase;
+  /** Hex grid state (for neighbor queries). Built on the fly if not provided. */
+  grid?: HexGridState;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,16 +114,16 @@ const VALID_STANCES: readonly CombatStance[] = ['ATTACK', 'SABOTAGE', 'DEFEND', 
 const STAKE_MIN = 5;
 const STAKE_MAX = 50;
 
-/** Arena hex bounds (7-hex grid: center + 6 surrounding) */
-const VALID_HEXES: readonly HexCoord[] = [
-  { q: 0, r: 0 },   // Center
-  { q: 1, r: 0 },   // E
-  { q: -1, r: 0 },  // W
-  { q: 0, r: -1 },  // NE
-  { q: 1, r: -1 },  // NW
-  { q: -1, r: 1 },  // SW
-  { q: 0, r: 1 },   // SE
-] as const;
+/** When true, the secretary always injects a move toward center if none is set. */
+const ALWAYS_INJECT_MOVE = true;
+
+/** Arena center hex (axial origin). */
+const CENTER: HexCoord = { q: 0, r: 0 };
+
+/** Check if a hex coordinate is within the arena grid (radius-based, no hardcoded list). */
+function isValidArenaHex(coord: HexCoord): boolean {
+  return getDistance(coord, { q: 0, r: 0 }) <= GRID_RADIUS;
+}
 
 // ---------------------------------------------------------------------------
 // Main Entry Point
@@ -174,6 +188,9 @@ export async function validateAndCorrect(
     });
     actions.reasoning = '[Secretary] No reasoning provided.';
   }
+
+  // 7. Inject fallback move (storm escape or center gravity)
+  injectStormEscapeMove(actions, agentCtx, arenaState, issues);
 
   // ── Attempt Zod parse on corrected actions ─────────────────────────
 
@@ -263,6 +280,8 @@ export async function validateAndCorrect(
   });
 
   // We don't have a BaseAgent instance here, so build a minimal default
+  // Preserve move if the validated actions still contain a valid one
+  const fallbackMoveParsed = HexCoordSchema.safeParse(actions.move);
   const fallback: EpochActions = {
     prediction: {
       asset: 'ETH',
@@ -271,6 +290,7 @@ export async function validateAndCorrect(
     },
     combatStance: 'NONE',
     reasoning: `[Secretary FALLBACK] ${agentCtx.name} actions were unrecoverable. Safe defaults applied.`,
+    ...(fallbackMoveParsed.success ? { move: fallbackMoveParsed.data } : {}),
   };
 
   return {
@@ -288,8 +308,14 @@ export async function validateAndCorrect(
 /**
  * Extract the SecretaryAgentContext from a BaseAgent instance.
  * Convenience helper so callers don't need to manually build the context.
+ *
+ * @param agent - The BaseAgent instance
+ * @param opts  - Optional phase and grid for storm-aware move injection
  */
-export function buildSecretaryContext(agent: BaseAgent): SecretaryAgentContext {
+export function buildSecretaryContext(
+  agent: BaseAgent,
+  opts?: { phase?: BattlePhase; grid?: HexGridState },
+): SecretaryAgentContext {
   const skill = agent.getSkillDefinition();
   return {
     id: agent.id,
@@ -303,6 +329,8 @@ export function buildSecretaryContext(agent: BaseAgent): SecretaryAgentContext {
     hasAlliance: agent.hasAlliance(),
     allyId: agent.allyId,
     position: agent.position,
+    phase: opts?.phase,
+    grid: opts?.grid,
   };
 }
 
@@ -651,6 +679,7 @@ function validateMovement(
   arenaState: ArenaState,
   issues: ValidationIssue[],
 ): void {
+  console.log(`[Secretary:Move] ${agentCtx.name} move: ${JSON.stringify(actions.move)}, position: ${JSON.stringify(agentCtx.position)}`);
   if (!actions.move) return;
 
   const move = actions.move as { q?: unknown; r?: unknown };
@@ -669,12 +698,11 @@ function validateMovement(
     return;
   }
 
-  // Validate target hex is within arena bounds
-  const isValidHex = VALID_HEXES.some(h => h.q === move.q && h.r === move.r);
-  if (!isValidHex) {
+  // Validate target hex is within arena bounds (radius-3 grid = 37 tiles)
+  if (!isValidArenaHex({ q: move.q as number, r: move.r as number })) {
     issues.push({
       field: 'move',
-      message: `Target hex (${move.q}, ${move.r}) is outside the 7-hex arena; removed`,
+      message: `Target hex (${move.q}, ${move.r}) is outside the ${GRID_RADIUS}-radius arena; removed`,
       severity: 'WARNING',
       action: 'REMOVED',
       originalValue: move,
@@ -731,6 +759,95 @@ function validateMovement(
       actions.move = undefined;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Move Injection: Storm Escape & Center Gravity
+// ---------------------------------------------------------------------------
+
+/**
+ * Inject a fallback move when the agent has no move set.
+ *
+ * Two triggers (checked in order):
+ *   1. Agent is on a storm tile -> inject move toward center (survival instinct)
+ *   2. ALWAYS_INJECT_MOVE is true and no move set -> inject move toward center
+ *
+ * The injected move is the best adjacent hex that is:
+ *   - Not in storm (if phase is known)
+ *   - Not occupied by another alive agent
+ *   - Closest to center
+ *
+ * Called AFTER validateMovement (which may have removed an invalid move)
+ * and BEFORE the final Zod parse.
+ */
+function injectStormEscapeMove(
+  actions: Record<string, unknown>,
+  agentCtx: SecretaryAgentContext,
+  arenaState: ArenaState,
+  issues: ValidationIssue[],
+): void {
+  // If a valid move already exists, nothing to do
+  if (actions.move) return;
+
+  // Need a position to compute neighbors
+  if (!agentCtx.position) return;
+
+  const pos = agentCtx.position;
+  const phase = agentCtx.phase;
+  const grid = agentCtx.grid ?? createGrid();
+
+  // Build set of occupied hexes (other alive agents)
+  const occupiedKeys = new Set<string>();
+  for (const a of arenaState.agents) {
+    if (a.id !== agentCtx.id && a.isAlive && a.position) {
+      occupiedKeys.add(hexKey(a.position));
+    }
+  }
+
+  // Determine if agent is currently on a storm tile
+  const onStormTile = phase ? isStormTile(pos, phase) : false;
+
+  // Should we inject? Either on storm tile OR ALWAYS_INJECT_MOVE
+  if (!onStormTile && !ALWAYS_INJECT_MOVE) return;
+
+  // Already at center -- no move needed
+  if (pos.q === CENTER.q && pos.r === CENTER.r) return;
+
+  // Get valid adjacent hexes
+  const neighbors = getNeighbors(pos, grid);
+
+  // Filter: not occupied, and prefer non-storm tiles
+  const candidates = neighbors.filter(n => {
+    if (occupiedKeys.has(hexKey(n))) return false;
+    // If phase is known, exclude storm tiles for storm escape
+    if (phase && isStormTile(n, phase)) return false;
+    return true;
+  });
+
+  // If all non-storm neighbors are occupied, fall back to any unoccupied neighbor
+  const fallbackCandidates = candidates.length > 0
+    ? candidates
+    : neighbors.filter(n => !occupiedKeys.has(hexKey(n)));
+
+  if (fallbackCandidates.length === 0) return; // Completely boxed in
+
+  // Pick the neighbor closest to center
+  const safeHex = closestTo(fallbackCandidates, CENTER);
+  if (!safeHex) return;
+
+  actions.move = { q: safeHex.q, r: safeHex.r };
+
+  const reason = onStormTile
+    ? `Agent on storm tile (${pos.q},${pos.r}) — injected escape move to (${safeHex.q},${safeHex.r})`
+    : `No move set — injected center-ward move from (${pos.q},${pos.r}) to (${safeHex.q},${safeHex.r})`;
+
+  issues.push({
+    field: 'move',
+    message: reason,
+    severity: 'INFO',
+    action: 'CORRECTED',
+    correctedValue: { q: safeHex.q, r: safeHex.r },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +1019,10 @@ function buildSafeActions(
 ): Record<string, unknown> {
   const pred = partialActions.prediction as Record<string, unknown> | undefined;
 
-  return {
+  // Preserve move if it's a valid HexCoord (already validated by validateMovement)
+  const moveParsed = HexCoordSchema.safeParse(partialActions.move);
+
+  const safe: Record<string, unknown> = {
     prediction: {
       asset: (pred?.asset && VALID_ASSETS.includes(pred.asset as Asset))
         ? pred.asset
@@ -919,6 +1039,12 @@ function buildSafeActions(
       ? `[Secretary SAFE] ${partialActions.reasoning}`
       : `[Secretary SAFE] ${agentCtx.name} actions partially recovered after validation errors.`,
   };
+
+  if (moveParsed.success) {
+    safe.move = moveParsed.data;
+  }
+
+  return safe;
 }
 
 // ---------------------------------------------------------------------------

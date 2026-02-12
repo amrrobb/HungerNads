@@ -116,6 +116,10 @@ export interface FaucetClaimRow {
   tier: number; // 1, 2, or 3
   amount: number;
   claimed_at: string;
+  /** On-chain transaction hash from token distribution (null if not yet sent). */
+  tx_hash: string | null;
+  /** Claim status: 'confirmed' (default), 'pending' (tx failed, awaiting retry). */
+  status: string;
 }
 
 export interface StreakTrackingRow {
@@ -205,6 +209,14 @@ export async function getAgent(
 
 export async function getAllAgents(db: D1Database): Promise<AgentRow[]> {
   const result = await db.prepare('SELECT * FROM agents').all<AgentRow>();
+  return result.results;
+}
+
+export async function getAgentsByBattle(db: D1Database, battleId: string): Promise<AgentRow[]> {
+  const result = await db
+    .prepare('SELECT * FROM agents WHERE battle_id = ?')
+    .bind(battleId)
+    .all<AgentRow>();
   return result.results;
 }
 
@@ -731,9 +743,46 @@ export async function insertFaucetClaim(
 ): Promise<void> {
   await db
     .prepare(
-      'INSERT INTO faucet_claims (id, wallet_address, tier, amount, claimed_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT INTO faucet_claims (id, wallet_address, tier, amount, claimed_at, tx_hash, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
-    .bind(claim.id, claim.wallet_address, claim.tier, claim.amount, claim.claimed_at)
+    .bind(
+      claim.id,
+      claim.wallet_address,
+      claim.tier,
+      claim.amount,
+      claim.claimed_at,
+      claim.tx_hash,
+      claim.status,
+    )
+    .run();
+}
+
+/**
+ * Update a faucet claim's tx_hash and/or status after on-chain distribution.
+ */
+export async function updateFaucetClaim(
+  db: D1Database,
+  claimId: string,
+  fields: { tx_hash?: string; status?: string },
+): Promise<void> {
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
+
+  if (fields.tx_hash !== undefined) {
+    setClauses.push('tx_hash = ?');
+    values.push(fields.tx_hash);
+  }
+  if (fields.status !== undefined) {
+    setClauses.push('status = ?');
+    values.push(fields.status);
+  }
+
+  if (setClauses.length === 0) return;
+
+  values.push(claimId);
+  await db
+    .prepare(`UPDATE faucet_claims SET ${setClauses.join(', ')} WHERE id = ?`)
+    .bind(...values)
     .run();
 }
 

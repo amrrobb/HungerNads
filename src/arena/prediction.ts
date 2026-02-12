@@ -37,6 +37,8 @@ export interface PredictionResult {
   correct: boolean;
   /** HP delta: +stake if correct, -stake if wrong, 0 if flat. */
   hpChange: number;
+  /** Agent's HP after applying the prediction result. Set by epoch processor after HP application. */
+  hpAfter?: number;
 }
 
 // ─── Core Function ───────────────────────────────────────────────────

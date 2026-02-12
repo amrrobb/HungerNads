@@ -20,8 +20,10 @@ import {
   updateBattle,
   getAgentWins,
   getAgentBattleCount,
+  getAgentsByBattle,
   checkFaucetEligibility,
   insertFaucetClaim,
+  updateFaucetClaim,
   getUserBetCount,
   getUserSponsorCount,
   FAUCET_TIERS,
@@ -34,6 +36,7 @@ import {
   type BattleRow,
   type FaucetClaimRow,
 } from '../db/schema';
+import { createTokenClient } from '../chain/token-client';
 import { AGENT_CLASSES, AgentClassSchema, AssetSchema } from '../agents';
 import type { AgentClass } from '../agents';
 import { MIN_AGENTS, MAX_AGENTS } from '../arena/arena';
@@ -99,6 +102,7 @@ app.get('/', (c) => {
       battleState: 'GET /battle/:id',
       battleEpochs: 'GET /battle/:id/epochs',
       battles: 'GET /battles',
+      agents: 'GET /agents',
       agentProfile: 'GET /agent/:id',
       agentLessons: 'GET /agent/:id/lessons',
       agentMatchups: 'GET /agent/:id/matchups',
@@ -622,6 +626,31 @@ app.post('/battle/:id/join', async (c) => {
       );
     }
 
+    // ── On-chain fee verification ──────────────────────────────
+    // If there's a fee and a txHash, verify the payment on-chain.
+    // Poll up to 3 times with 1s intervals to account for Monad ~1s block time.
+    // Gracefully skip if chainClient is unavailable (local dev / missing env vars).
+    const chainClient = createChainClient(c.env);
+    if (chainClient && feeAmount > 0 && txHash) {
+      const expectedFeeWei = parseEther(battle.fee_amount ?? '0');
+      let feePaid = false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        feePaid = await chainClient.checkFeePaid(
+          txHash as `0x${string}`,
+          expectedFeeWei,
+          walletAddress as `0x${string}` | undefined,
+        );
+        if (feePaid) break;
+        if (attempt < 2) await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!feePaid) {
+        return c.json(
+          { error: 'Fee transaction not yet confirmed on-chain. Please wait and retry.' },
+          402,
+        );
+      }
+    }
+
     // ── Forward to ArenaDO for game-state validation ────────────
     const arenaId = c.env.ARENA_DO.idFromName(battleId);
     const arenaStub = c.env.ARENA_DO.get(arenaId);
@@ -804,6 +833,73 @@ app.get('/battles', async (c) => {
 // ─── Agent Info ───────────────────────────────────────────────
 
 /**
+ * GET /agents
+ *
+ * Paginated list of all agents with aggregated battle stats.
+ * Query params: ?limit=20&offset=0
+ */
+app.get('/agents', async (c) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(c.req.query('limit') ?? '20', 10), 1), 100);
+    const offset = Math.max(parseInt(c.req.query('offset') ?? '0', 10), 0);
+
+    // Get total count of agents that have battle records
+    const countResult = await c.env.DB
+      .prepare(
+        `SELECT COUNT(DISTINCT br.agent_id) as total
+         FROM battle_records br
+         INNER JOIN agents a ON br.agent_id = a.id`,
+      )
+      .first<{ total: number }>();
+    const total = countResult?.total ?? 0;
+
+    // Get paginated agents with aggregated stats
+    const result = await c.env.DB
+      .prepare(
+        `SELECT
+           br.agent_id as id,
+           a.name,
+           br.agent_class as class,
+           SUM(CASE WHEN br.result = 'win' THEN 1 ELSE 0 END) as wins,
+           SUM(CASE WHEN br.result != 'win' THEN 1 ELSE 0 END) as losses,
+           SUM(br.kills) as kills,
+           COUNT(*) as totalBattles,
+           CAST(SUM(CASE WHEN br.result = 'win' THEN 1 ELSE 0 END) AS REAL) / COUNT(*) as winRate
+         FROM battle_records br
+         INNER JOIN agents a ON br.agent_id = a.id
+         GROUP BY br.agent_id
+         HAVING totalBattles >= 1
+         ORDER BY winRate DESC, kills DESC
+         LIMIT ? OFFSET ?`,
+      )
+      .bind(limit, offset)
+      .all<{
+        id: string;
+        name: string;
+        class: string;
+        wins: number;
+        losses: number;
+        kills: number;
+        totalBattles: number;
+        winRate: number;
+      }>();
+
+    return c.json({
+      agents: result.results,
+      total,
+      offset,
+      limit,
+    });
+  } catch (error) {
+    console.error('Failed to get agents:', error);
+    return c.json(
+      { error: 'Failed to get agents', detail: String(error) },
+      500,
+    );
+  }
+});
+
+/**
  * GET /agent/:id
  *
  * Full agent profile from AgentProfileBuilder (D1-based stats + lessons).
@@ -982,13 +1078,20 @@ app.get('/battle/:id/odds', async (c) => {
       }
     }
 
-    // If no epoch data yet, we can't compute meaningful odds based on HP.
-    // Return equal odds for all agents with bets.
+    // If no epoch data yet, fall back to bet data then to DB agents.
     if (Object.keys(agentHpMap).length === 0) {
-      // Fall back to agents from bet data — give each equal HP.
       const agentIds = Object.keys(perAgent);
-      for (const id of agentIds) {
-        agentHpMap[id] = { hp: 1000, maxHp: 1000, isAlive: true };
+      if (agentIds.length > 0) {
+        // Fall back to agents from bet data — give each equal HP.
+        for (const id of agentIds) {
+          agentHpMap[id] = { hp: 1000, maxHp: 1000, isAlive: true };
+        }
+      } else {
+        // No bets either — query all agents registered for this battle.
+        const battleAgents = await getAgentsByBattle(c.env.DB, battleId);
+        for (const agent of battleAgents) {
+          agentHpMap[agent.id] = { hp: 1000, maxHp: 1000, isAlive: true };
+        }
       }
     }
 
@@ -1532,16 +1635,37 @@ app.post('/faucet', async (c) => {
       }
     }
 
-    // Record the claim
+    // Record the claim in D1
     const claim: FaucetClaimRow = {
       id: crypto.randomUUID(),
       wallet_address: walletAddress,
       tier,
       amount: tierConfig.amount,
       claimed_at: new Date().toISOString(),
+      tx_hash: null,
+      status: 'confirmed',
     };
 
     await insertFaucetClaim(c.env.DB, claim);
+
+    // Attempt on-chain token distribution (graceful degradation)
+    let txHash: string | null = null;
+    const tokenClient = createTokenClient(c.env);
+    if (tokenClient) {
+      try {
+        txHash = await tokenClient.distribute(
+          walletAddress as Address,
+          BigInt(tierConfig.amount) * 10n ** 18n,
+        );
+        // Update D1 with tx hash for audit trail
+        await updateFaucetClaim(c.env.DB, claim.id, { tx_hash: txHash });
+        console.log(`[faucet] Distributed ${tierConfig.amount} HNADS to ${walletAddress} — tx ${txHash}`);
+      } catch (err) {
+        console.error('[faucet] Token distribution failed:', err);
+        // Mark claim as pending so it can be retried
+        await updateFaucetClaim(c.env.DB, claim.id, { status: 'pending' });
+      }
+    }
 
     return c.json({
       ok: true,
@@ -1551,6 +1675,7 @@ app.post('/faucet', async (c) => {
         tierLabel: tierConfig.label,
         amount: tierConfig.amount,
         claimedAt: claim.claimed_at,
+        txHash,
       },
     });
   } catch (error) {

@@ -19,7 +19,7 @@
 
 import type { EpochResult } from '../arena/epoch';
 import type { PredictionResult } from '../arena/prediction';
-import type { CombatResult } from '../arena/combat';
+// CombatResult is accessed indirectly via EpochResult.combatResults
 import type { DeathEvent } from '../arena/death';
 import type { MarketData, AllianceEvent as AllianceEventData } from '../agents/schemas';
 import type { CurveEvent } from '../chain/nadfun';
@@ -70,12 +70,39 @@ export interface PredictionResultEvent {
 
 export interface CombatResultEvent {
   type: 'combat_result';
-  data: CombatResult;
+  data: {
+    attackerId: string;
+    defenderId: string;
+    damage: number;
+    blocked: boolean;
+    attackerHpAfter: number;
+    defenderHpAfter: number;
+    /** True if the attacker betrayed their ally (2x damage). */
+    betrayal?: boolean;
+  };
 }
 
 export interface AgentDeathEvent {
   type: 'agent_death';
   data: DeathEvent;
+}
+
+/**
+ * Emitted when all agents die in the same epoch and a winner is determined
+ * by kill count rather than by being the last survivor.
+ * Fires before battle_end so the frontend can show "ALL AGENTS REKT" drama.
+ */
+export interface MutualRektEvent {
+  type: 'mutual_rekt';
+  data: {
+    winnerId: string;
+    winnerName: string;
+    winnerClass: string;
+    winnerKills: number;
+    totalAgents: number;
+    /** e.g. "All agents eliminated — winner by kill count" */
+    reason: string;
+  };
 }
 
 export interface EpochEndEvent {
@@ -446,6 +473,7 @@ export type BattleEvent =
   | PredictionResultEvent
   | CombatResultEvent
   | AgentDeathEvent
+  | MutualRektEvent
   | EpochEndEvent
   | BattleEndEvent
   | OddsUpdateEvent
@@ -786,10 +814,23 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
   }
 
   // ── 4. Combat results ─────────────────────────────────────────────
-  for (const combatResult of result.combatResults) {
+  // Transform raw CombatResult → frontend-friendly shape with
+  // defenderId, damage, blocked, and HP-after values.
+  for (const cr of result.combatResults) {
+    const attackerState = result.agentStates.find(a => a.id === cr.attackerId);
+    const targetState = result.agentStates.find(a => a.id === cr.targetId);
+
     events.push({
       type: 'combat_result',
-      data: combatResult,
+      data: {
+        attackerId: cr.attackerId,
+        defenderId: cr.targetId,
+        damage: Math.abs(cr.hpChangeTarget),
+        blocked: cr.outcome === 'ABSORB',
+        attackerHpAfter: attackerState?.hp ?? 0,
+        defenderHpAfter: targetState?.hp ?? 0,
+        betrayal: cr.betrayal || false,
+      },
     });
   }
 
@@ -842,6 +883,24 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
       battleComplete: result.battleComplete,
     },
   });
+
+  // ── 6.5. Mutual REKT (all agents died — winner by kills) ──────────
+  if (result.battleComplete && result.winner) {
+    const allRekt = result.agentStates.every(a => !a.isAlive);
+    if (allRekt) {
+      events.push({
+        type: 'mutual_rekt',
+        data: {
+          winnerId: result.winner.id,
+          winnerName: result.winner.name,
+          winnerClass: result.winner.class,
+          winnerKills: result.winner.kills ?? 0,
+          totalAgents: result.agentStates.length,
+          reason: 'All agents eliminated — winner by kill count',
+        },
+      });
+    }
+  }
 
   // ── 7. Battle end (only when battle is complete with a winner) ────
   if (result.battleComplete && result.winner) {

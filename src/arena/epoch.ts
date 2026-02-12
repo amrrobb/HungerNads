@@ -185,7 +185,7 @@ export interface EpochResult {
     allianceEpochsRemaining?: number;
   }[];
   battleComplete: boolean;
-  winner?: { id: string; name: string; class: string };
+  winner?: { id: string; name: string; class: string; kills?: number };
   /** Current battle phase for this epoch (null if no phase config). */
   currentPhase?: BattlePhase;
   /** Phase transition that occurred this epoch (null if no transition). */
@@ -331,6 +331,8 @@ export async function processEpoch(
 
   const { actionsMap: actions, secretaryReports } = await collectDecisions(activeAgents, arenaState, fallbackCtx);
 
+  console.log(`[Movement] Post-collectDecisions: ${actions.size} actions total, ${Array.from(actions.values()).filter(a => a.move).length} have moves`);
+
   // ── Step 2b: Record reasoning as agent thoughts (for spectator feed) ──
   for (const agent of activeAgents) {
     const agentActions = actions.get(agent.id);
@@ -365,7 +367,11 @@ export async function processEpoch(
   // Apply prediction HP changes to agents (with skill modifiers)
   for (const result of predictionResults) {
     const agent = arena.getAgent(result.agentId);
-    if (!agent || !agent.alive()) continue;
+    if (!agent || !agent.alive()) {
+      // Still set hpAfter for broadcasting (agent is dead or missing)
+      (result as { hpAfter: number }).hpAfter = agent?.hp ?? 0;
+      continue;
+    }
 
     let hpChange = result.hpChange;
 
@@ -393,6 +399,9 @@ export async function processEpoch(
     } else if (hpChange < 0) {
       agent.takeDamage(Math.abs(hpChange));
     }
+
+    // Set hpAfter for broadcasting to spectators
+    (result as { hpAfter: number }).hpAfter = agent.hp;
   }
 
   // ── Step 4: Resolve combat (skipped during LOOT phase) ──────────────
@@ -610,7 +619,7 @@ export async function processEpoch(
 
   // ── Step 8: Check win condition ───────────────────────────────────────
   const battleComplete = arena.isComplete();
-  let winner: { id: string; name: string; class: string } | undefined;
+  let winner: { id: string; name: string; class: string; kills?: number } | undefined;
 
   if (battleComplete) {
     const winnerAgent = arena.getWinner();
@@ -619,6 +628,7 @@ export async function processEpoch(
         id: winnerAgent.id,
         name: winnerAgent.name,
         class: winnerAgent.agentClass,
+        kills: winnerAgent.kills,
       };
     }
   }
@@ -784,7 +794,7 @@ async function collectDecisions(
     agents.map(async (agent) => {
       let rawActions: EpochActions;
       try {
-        rawActions = await agent.decide(arenaState);
+        rawActions = await agent.decide(arenaState, fallbackCtx);
       } catch (err) {
         console.error(
           `[Epoch] Agent ${agent.name} (${agent.id}) decide() failed:`,
@@ -793,8 +803,11 @@ async function collectDecisions(
         rawActions = getDefaultActions(agent, fallbackCtx);
       }
 
-      // Run secretary validation
-      const secretaryCtx = buildSecretaryContext(agent);
+      // Run secretary validation (pass phase + grid for storm-aware move injection)
+      const secretaryCtx = buildSecretaryContext(agent, fallbackCtx
+        ? { phase: fallbackCtx.phase, grid: fallbackCtx.grid }
+        : undefined,
+      );
       const report = await validateAndCorrect(
         rawActions,
         secretaryCtx,
@@ -930,12 +943,13 @@ function resolveAttackTargets(
  * Dead agents and agents without a move action are skipped.
  * Collision handling: if two agents try to move to the same hex, both stay put.
  *
- * Also syncs movement with the 19-tile hex grid (arena.grid).
+ * Also syncs movement with the 37-tile hex grid (arena.grid).
  */
 function processMovements(
   actions: Map<string, EpochActions>,
   arena: ArenaManager,
 ): MoveResult[] {
+  console.log(`[Movement] Processing ${actions.size} agent actions, ${Array.from(actions.values()).filter(a => a.move).length} have move field`);
   const results: MoveResult[] = [];
   const positions = arena.getAgentPositions();
 
@@ -958,6 +972,7 @@ function processMovements(
     const to = action.move;
     const toKey = `${to.q},${to.r}`;
 
+    console.log(`[Movement] ${agent.name} (${agentId}): from (${from.q},${from.r}) -> to (${to.q},${to.r})`);
     intendedMoves.set(agentId, { agentId, from, to });
     const existing = targetCounts.get(toKey) ?? [];
     existing.push(agentId);
@@ -978,6 +993,7 @@ function processMovements(
   for (const [agentId, move] of intendedMoves) {
     if (collisionAgents.has(agentId)) {
       // Collision: both agents stay put
+      console.log(`[Movement] ${agentId}: COLLISION at (${move.to.q},${move.to.r}) — staying put`);
       results.push({
         agentId,
         from: move.from,
@@ -989,6 +1005,7 @@ function processMovements(
     }
 
     const result = executeMove(agentId, move.to, positions);
+    console.log(`[Movement] ${agentId}: executeMove result — success=${result.success}${result.reason ? `, reason=${result.reason}` : ''}`);
     results.push(result);
 
     // Sync with hex grid and agent position
@@ -996,7 +1013,7 @@ function processMovements(
       const agent = arena.getAgent(agentId);
       if (agent) {
         agent.position = { q: move.to.q, r: move.to.r };
-        // Update the 19-tile hex grid
+        // Update the 37-tile hex grid
         arena.updateGrid(
           hexMoveAgent(agentId, move.from, move.to, arena.grid),
         );

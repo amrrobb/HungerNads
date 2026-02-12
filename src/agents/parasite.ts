@@ -11,7 +11,7 @@
  * - Never ATTACKs (too risky for the Parasite's survival-first style)
  */
 
-import { BaseAgent, getDefaultActions } from './base-agent';
+import { BaseAgent, getDefaultActions, type FallbackContext } from './base-agent';
 import { EpochActionsSchema } from './schemas';
 import type { ArenaState, ArenaAgentState, EpochActions, CombatStance, SkillDefinition } from './schemas';
 import { PERSONALITIES } from './personalities';
@@ -96,7 +96,7 @@ export class ParasiteAgent extends BaseAgent {
     };
   }
 
-  async decide(arenaState: ArenaState): Promise<EpochActions> {
+  async decide(arenaState: ArenaState, fallbackCtx?: FallbackContext): Promise<EpochActions> {
     const others = arenaState.agents
       .filter(a => a.id !== this.id && a.isAlive)
       .map(a => ({ name: a.name, class: a.class, hp: a.hp }));
@@ -159,6 +159,7 @@ export class ParasiteAgent extends BaseAgent {
 
       const parsed = EpochActionsSchema.safeParse({
         prediction: result.prediction,
+        move: result.move,
         combatStance,
         combatTarget: (combatStance === 'SABOTAGE') ? combatTarget : undefined,
         combatStake: (combatStance === 'SABOTAGE') ? combatStake : undefined,
@@ -169,13 +170,13 @@ export class ParasiteAgent extends BaseAgent {
 
       if (!parsed.success) {
         console.warn(`[PARASITE:${this.name}] Invalid LLM response, using defaults`);
-        return getDefaultActions(this);
+        return getDefaultActions(this, fallbackCtx);
       }
 
       return parsed.data;
     } catch (error) {
       console.error(`[PARASITE:${this.name}] Decision failed:`, error);
-      return getDefaultActions(this);
+      return getDefaultActions(this, fallbackCtx);
     }
   }
 }

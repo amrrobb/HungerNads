@@ -1,26 +1,20 @@
 /**
  * HUNGERNADS - Hex Grid Positioning System
  *
- * 7-hex honeycomb arena using axial coordinates (q, r).
- * Center hex + 6 surrounding hexes form the arena.
+ * 37-tile honeycomb arena using axial coordinates (q, r).
+ * 4-ring grid (radius 3): center + 3 surrounding rings.
  *
- * Layout (flat-top hexagons):
- *
- *        (0,-1)  (1,-1)
- *      NW         NE
- *   (-1,0)  (0,0)  (1,0)
- *     W    CENTER    E
- *      (-1,1)  (0,1)
- *        SW      SE
+ * Ring 0 (center):  1 tile   — Lv 4 (legendary)
+ * Ring 1 (inner):   6 tiles  — Lv 3 (cornucopia)
+ * Ring 2 (middle): 12 tiles  — Lv 2 (normal)
+ * Ring 3 (outer):  18 tiles  — Lv 1 (edge)
  *
  * Adjacency = distance of 1 in axial coordinates.
  * Agents occupy hexes; at most one agent per hex.
  * Movement is an optional epoch action -- move to an adjacent unoccupied hex.
  *
  * NOTE: We use raw axial coordinate math instead of honeycomb-grid.
- * For a 7-hex arena the math is trivially simple, zero dependencies,
- * and fully compatible with Cloudflare Workers. honeycomb-grid can be
- * installed in dashboard/ later for rendering the hex viewer (tk-0bt.5).
+ * Zero dependencies, fully compatible with Cloudflare Workers.
  */
 
 // ---------------------------------------------------------------------------
@@ -48,19 +42,49 @@ export interface MoveResult {
 // Constants
 // ---------------------------------------------------------------------------
 
+/** Arena radius. Must match GRID_RADIUS in hex-grid.ts. */
+export const ARENA_RADIUS = 3;
+
 /**
- * The 7-hex arena. Center + 6 surrounding hexes.
- * Labels are compass directions for readability in logs and UI.
+ * Generate a human-readable label for a hex coordinate.
+ * Center = "CENTER", ring 1 = compass directions, ring 2+ = coordinate string.
  */
-export const ARENA_HEXES: readonly ArenaHex[] = [
-  { q: 0, r: 0, label: 'CENTER' },
-  { q: 1, r: 0, label: 'EAST' },
-  { q: 0, r: 1, label: 'SE' },
-  { q: -1, r: 1, label: 'SW' },
-  { q: -1, r: 0, label: 'WEST' },
-  { q: 0, r: -1, label: 'NW' },
-  { q: 1, r: -1, label: 'NE' },
-] as const;
+function labelForHex(q: number, r: number): string {
+  if (q === 0 && r === 0) return 'CENTER';
+  // Ring 1: classic compass labels
+  const ring1Labels: Record<string, string> = {
+    '1,0': 'E', '0,1': 'SE', '-1,1': 'SW',
+    '-1,0': 'W', '0,-1': 'NW', '1,-1': 'NE',
+  };
+  const key = `${q},${r}`;
+  if (ring1Labels[key]) return ring1Labels[key];
+  // Ring 2+: coordinate-based label
+  const dist = Math.max(Math.abs(q), Math.abs(r), Math.abs(-q - r));
+  return `R${dist}(${q},${r})`;
+}
+
+/**
+ * Generate all hex coordinates within a given radius from origin.
+ * radius 0 = 1 tile, radius 1 = 7 tiles, radius 2 = 19 tiles, radius 3 = 37 tiles.
+ */
+function generateArenaHexes(radius: number): ArenaHex[] {
+  const hexes: ArenaHex[] = [];
+  for (let q = -radius; q <= radius; q++) {
+    for (let r = -radius; r <= radius; r++) {
+      const s = -q - r;
+      if (Math.abs(s) <= radius) {
+        hexes.push({ q, r, label: labelForHex(q, r) });
+      }
+    }
+  }
+  return hexes;
+}
+
+/**
+ * The 37-tile arena (radius 3). Generated at module load.
+ * Center + 3 surrounding rings of hexes.
+ */
+export const ARENA_HEXES: readonly ArenaHex[] = generateArenaHexes(ARENA_RADIUS);
 
 /**
  * The 6 axial direction offsets for flat-top hexagons.
@@ -122,7 +146,7 @@ export function isAdjacent(a: HexCoord, b: HexCoord): boolean {
 // Arena validation
 // ---------------------------------------------------------------------------
 
-/** Check if a hex coordinate is within the 7-hex arena. */
+/** Check if a hex coordinate is within the 37-tile arena (radius 3). */
 export function isValidHex(hex: HexCoord): boolean {
   return VALID_HEX_KEYS.has(hexKey(hex));
 }
@@ -139,7 +163,7 @@ export function getHexLabel(hex: HexCoord): string | null {
 
 /**
  * Get all valid arena neighbors of a hex.
- * Only returns hexes that are within the 7-hex arena.
+ * Only returns hexes that are within the 37-tile arena.
  */
 export function getNeighbors(hex: HexCoord): HexCoord[] {
   return HEX_DIRECTIONS
@@ -165,9 +189,9 @@ export function getNeighborInDirection(hex: HexCoord, direction: number): HexCoo
  * Assign initial positions to agents, distributing them across the arena.
  *
  * Strategy:
- * - Shuffle the 7 arena hexes
+ * - Shuffle the 37 arena hexes
  * - Assign agents to hexes in order
- * - Supports 2-7 agents (7 hexes total)
+ * - Supports up to 37 agents (37 hexes total)
  *
  * Returns a Map<agentId, HexCoord>.
  */

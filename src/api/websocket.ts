@@ -78,6 +78,24 @@ export interface AgentDeathEvent {
   data: DeathEvent;
 }
 
+/**
+ * Emitted when all agents die in the same epoch and a winner is determined
+ * by kill count rather than by being the last survivor.
+ * Fires before battle_end so the frontend can show "ALL AGENTS REKT" drama.
+ */
+export interface MutualRektEvent {
+  type: 'mutual_rekt';
+  data: {
+    winnerId: string;
+    winnerName: string;
+    winnerClass: string;
+    winnerKills: number;
+    totalAgents: number;
+    /** e.g. "All agents eliminated — winner by kill count" */
+    reason: string;
+  };
+}
+
 export interface EpochEndEvent {
   type: 'epoch_end';
   data: {
@@ -446,6 +464,7 @@ export type BattleEvent =
   | PredictionResultEvent
   | CombatResultEvent
   | AgentDeathEvent
+  | MutualRektEvent
   | EpochEndEvent
   | BattleEndEvent
   | OddsUpdateEvent
@@ -842,6 +861,24 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
       battleComplete: result.battleComplete,
     },
   });
+
+  // ── 6.5. Mutual REKT (all agents died — winner by kills) ──────────
+  if (result.battleComplete && result.winner) {
+    const allRekt = result.agentStates.every(a => !a.isAlive);
+    if (allRekt) {
+      events.push({
+        type: 'mutual_rekt',
+        data: {
+          winnerId: result.winner.id,
+          winnerName: result.winner.name,
+          winnerClass: result.winner.class,
+          winnerKills: result.winner.kills ?? 0,
+          totalAgents: result.agentStates.length,
+          reason: 'All agents eliminated — winner by kill count',
+        },
+      });
+    }
+  }
 
   // ── 7. Battle end (only when battle is complete with a winner) ────
   if (result.battleComplete && result.winner) {

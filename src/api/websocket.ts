@@ -19,7 +19,7 @@
 
 import type { EpochResult } from '../arena/epoch';
 import type { PredictionResult } from '../arena/prediction';
-import type { CombatResult } from '../arena/combat';
+// CombatResult is accessed indirectly via EpochResult.combatResults
 import type { DeathEvent } from '../arena/death';
 import type { MarketData, AllianceEvent as AllianceEventData } from '../agents/schemas';
 import type { CurveEvent } from '../chain/nadfun';
@@ -70,7 +70,16 @@ export interface PredictionResultEvent {
 
 export interface CombatResultEvent {
   type: 'combat_result';
-  data: CombatResult;
+  data: {
+    attackerId: string;
+    defenderId: string;
+    damage: number;
+    blocked: boolean;
+    attackerHpAfter: number;
+    defenderHpAfter: number;
+    /** True if the attacker betrayed their ally (2x damage). */
+    betrayal?: boolean;
+  };
 }
 
 export interface AgentDeathEvent {
@@ -805,10 +814,23 @@ export function epochToEvents(result: EpochResult): BattleEvent[] {
   }
 
   // ── 4. Combat results ─────────────────────────────────────────────
-  for (const combatResult of result.combatResults) {
+  // Transform raw CombatResult → frontend-friendly shape with
+  // defenderId, damage, blocked, and HP-after values.
+  for (const cr of result.combatResults) {
+    const attackerState = result.agentStates.find(a => a.id === cr.attackerId);
+    const targetState = result.agentStates.find(a => a.id === cr.targetId);
+
     events.push({
       type: 'combat_result',
-      data: combatResult,
+      data: {
+        attackerId: cr.attackerId,
+        defenderId: cr.targetId,
+        damage: Math.abs(cr.hpChangeTarget),
+        blocked: cr.outcome === 'ABSORB',
+        attackerHpAfter: attackerState?.hp ?? 0,
+        defenderHpAfter: targetState?.hp ?? 0,
+        betrayal: cr.betrayal || false,
+      },
     });
   }
 
